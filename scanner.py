@@ -36,17 +36,40 @@ _scan_state = {
 }
 
 SEARCH_QUERIES = [
-    '"EIS investor" individual invested backed 2025 OR 2026',
-    'angel investor EIS UK startup funding announcement',
-    '"EIS qualifying" investor personal investment UK',
-    'SEIS EIS angel individual investor new funding round',
-    '"enterprise investment scheme" angel invested startup',
-    'EIS tax relief angel round individual backing UK',
+    # Direct EIS/SEIS mentions
+    '"EIS investor" OR "SEIS investor" individual name invested 2024 OR 2025 OR 2026',
+    '"enterprise investment scheme" angel investor backed funded UK',
+    '"EIS qualifying" investment round individual investor announcement',
+    '"SEIS funding" OR "EIS funding" angel investor name UK startup',
+    'EIS tax relief investor personal investment UK company',
+
+    # Angel investment & seed rounds (UK focus — many are EIS-qualifying)
+    'UK angel investor seed round funded startup 2025 OR 2026',
+    'UK angel investment announcement individual investor backed',
+    'angel investor UK "led the round" OR "participated in" seed pre-seed',
+    'UK startup seed funding announcement investor names 2025',
+    'UK early stage investor "angel round" OR "seed round" funded',
+
+    # EIS fund managers and networks — they list investors/deals
+    'site:seedrs.com OR site:crowdcube.com investor funded EIS',
+    'site:linkedin.com "EIS" OR "SEIS" "angel investor" UK invested',
+    'Mercia OR Deepbridge OR Maven OR "Octopus Ventures" EIS investment individual investor',
+    'UK angel network deal completed investor names 2025 OR 2026',
+    '"angel syndicate" UK investor invested startup EIS SEIS',
+
+    # Companies House and regulatory filings
+    '"allotment of shares" EIS investor UK 2025 OR 2026',
+    'UK startup "share allotment" individual investor SEIS EIS',
+
+    # Industry press and directories
+    'site:uktech.news OR site:sifted.eu investor angel funded UK startup',
+    'site:beauhurst.com OR site:growthbusiness.co.uk angel investor UK EIS',
+    '"angel investor" UK profile invested EIS qualifying companies portfolio',
 ]
 
-EXTRACTION_PROMPT = """You are an analyst extracting structured data about individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
+EXTRACTION_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
 
-Given the following search result snippet, determine if it mentions a NAMED INDIVIDUAL (not a fund or firm) who has personally invested in an EIS/SEIS qualifying company.
+Given the following search result snippet, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company that is likely EIS/SEIS qualifying.
 
 Search result:
 Title: {title}
@@ -54,10 +77,13 @@ URL: {url}
 Snippet: {snippet}
 
 Rules:
-- Only extract NAMED INDIVIDUALS (first and last name), not fund names or firm names alone
-- The person must be clearly referenced as making an EIS or SEIS investment, or investing in a company that is described as EIS/SEIS qualifying
-- Skip generic mentions like "EIS investors" without specific names
-- If the snippet is about an EIS fund manager or advisor (not making a personal investment), skip it
+- Extract NAMED INDIVIDUALS (first and last name required) who are described as investing, backing, or funding a company
+- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned — most UK seed/early-stage investments in small companies qualify for EIS/SEIS
+- INCLUDE angel investors, seed investors, individual backers mentioned by name
+- INCLUDE people listed as investors on crowdfunding platforms (Seedrs, Crowdcube, etc.)
+- EXCLUDE fund managers, VCs, or advisors who are only mentioned as managing funds (not making personal investments)
+- EXCLUDE company names without an associated individual's name
+- EXCLUDE generic mentions like "angel investors" without specific names
 - If no qualifying individual investor is found, return: {{"investors": []}}
 
 Return a JSON object with:
@@ -66,10 +92,10 @@ Return a JSON object with:
     "name": "Full Name",
     "role": "Their professional role/title (or 'Angel Investor' if unknown)",
     "company": "Their employer/firm (or 'Independent' if unknown)",
-    "eis_company": "The EIS company they invested in",
-    "sector": "The EIS company's sector (brief)",
+    "eis_company": "The company they invested in",
+    "sector": "The invested company's sector (brief)",
     "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
-    "context_quote": "A brief quote from the snippet showing the EIS investment mention"
+    "context_quote": "A brief quote from the snippet showing the investment mention"
   }}
 ]}}
 
@@ -259,7 +285,7 @@ def _extract_with_anthropic(api_key, result):
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 1024,
                 "messages": [{"role": "user", "content": prompt}],
             },
