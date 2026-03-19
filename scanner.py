@@ -226,17 +226,23 @@ def _search_duckduckgo(all_results, seen_urls):
     return count
 
 
+# Gemini free tier: 15 RPM. We batch 5 results per call = ~37 calls for 183 results.
+# With 4.5s spacing that's ~3 min, well within 15 RPM.
+BATCH_SIZE = 5
+GEMINI_DELAY = 4.5  # seconds between calls to stay under 15 RPM
+
+
 def _extract_investors_from_results(results):
     """Use Gemini (primary) or Anthropic (fallback) to extract investor mentions."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if gemini_key:
-        _log("Using Gemini 2.0 Flash for extraction (cheapest option).")
-        extractor = lambda result: _extract_with_gemini(gemini_key, result)
+        _log("Using Gemini 2.0 Flash for extraction (batched, rate-limited).")
+        use_gemini = True
     elif anthropic_key:
         _log("GEMINI_API_KEY not set. Falling back to Anthropic for extraction.")
-        extractor = lambda result: _extract_with_anthropic(anthropic_key, result)
+        use_gemini = False
     else:
         _log("No LLM API key set. Set GEMINI_API_KEY (recommended) or ANTHROPIC_API_KEY in Render Environment.")
         _update_state(
@@ -250,42 +256,106 @@ def _extract_investors_from_results(results):
 
     _log(f"Analyzing {len(results)} search results...")
 
-    for i, result in enumerate(results):
-        _update_state(
-            phase="extracting",
-            phase_detail=f"Analyzing result {i+1}/{len(results)}: {result['title'][:50]}..."
-        )
+    if use_gemini:
+        # Batch results to reduce API calls and respect rate limits
+        batches = [results[i:i + BATCH_SIZE] for i in range(0, len(results), BATCH_SIZE)]
+        _log(f"Processing in {len(batches)} batches of up to {BATCH_SIZE}")
 
-        try:
-            investor_data = extractor(result)
-            if investor_data:
-                _log(f"Found {len(investor_data)} investor(s) in: {result['title'][:50]}")
-            for inv in investor_data:
-                inv["source_url"] = result["url"]
-                inv["source_type"] = _classify_source(result["url"])
-                inv["source_name"] = _extract_source_name(result["url"], result["title"])
-                inv["date_found"] = today
-                inv["linkedin_url"] = None
-                all_investors.append(inv)
-        except Exception as e:
-            _log(f"Extraction error for result {i+1}: {e}")
+        for batch_idx, batch in enumerate(batches):
+            _update_state(
+                phase="extracting",
+                phase_detail=f"Analyzing batch {batch_idx + 1}/{len(batches)} ({batch_idx * BATCH_SIZE + 1}-{min((batch_idx + 1) * BATCH_SIZE, len(results))} of {len(results)})..."
+            )
 
-        time.sleep(0.2)
+            try:
+                investor_data = _extract_batch_with_gemini(gemini_key, batch)
+                if investor_data:
+                    _log(f"Batch {batch_idx + 1}: found {len(investor_data)} investor(s)")
+                for inv in investor_data:
+                    inv.setdefault("source_url", "")
+                    inv["source_type"] = _classify_source(inv.get("source_url", ""))
+                    inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
+                    inv["date_found"] = today
+                    inv["linkedin_url"] = None
+                    all_investors.append(inv)
+            except Exception as e:
+                _log(f"Batch {batch_idx + 1} error: {e}")
+
+            # Rate limit: wait between batches
+            if batch_idx < len(batches) - 1:
+                time.sleep(GEMINI_DELAY)
+    else:
+        # Anthropic path: one result at a time (higher rate limits)
+        for i, result in enumerate(results):
+            _update_state(
+                phase="extracting",
+                phase_detail=f"Analyzing result {i+1}/{len(results)}: {result['title'][:50]}..."
+            )
+            try:
+                investor_data = _extract_with_anthropic(anthropic_key, result)
+                if investor_data:
+                    _log(f"Found {len(investor_data)} investor(s) in: {result['title'][:50]}")
+                for inv in investor_data:
+                    inv["source_url"] = result["url"]
+                    inv["source_type"] = _classify_source(result["url"])
+                    inv["source_name"] = _extract_source_name(result["url"], result["title"])
+                    inv["date_found"] = today
+                    inv["linkedin_url"] = None
+                    all_investors.append(inv)
+            except Exception as e:
+                _log(f"Extraction error for result {i+1}: {e}")
+            time.sleep(0.3)
 
     return all_investors
 
 
-def _extract_with_gemini(api_key, result):
-    """Call Gemini 2.0 Flash to extract investors from a search result."""
-    prompt = EXTRACTION_PROMPT.format(
-        title=result["title"],
-        url=result["url"],
-        snippet=result["snippet"],
+BATCH_EXTRACTION_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
+
+Below are {count} search results. For EACH result, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company.
+
+{results_text}
+
+Rules:
+- Extract NAMED INDIVIDUALS (first and last name required) who are described as investing, backing, or funding a company
+- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned
+- INCLUDE angel investors, seed investors, individual backers mentioned by name
+- INCLUDE people listed as investors on crowdfunding platforms (Seedrs, Crowdcube, etc.)
+- EXCLUDE fund managers, VCs, or advisors who are only mentioned as managing funds (not making personal investments)
+- EXCLUDE company names without an associated individual's name
+- EXCLUDE generic mentions like "angel investors" without specific names
+
+Return a JSON object with:
+{{"investors": [
+  {{
+    "name": "Full Name",
+    "role": "Their professional role/title (or 'Angel Investor' if unknown)",
+    "company": "Their employer/firm (or 'Independent' if unknown)",
+    "eis_company": "The company they invested in",
+    "sector": "The invested company's sector (brief)",
+    "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
+    "source_url": "The URL of the search result where this investor was found",
+    "context_quote": "A brief quote showing the investment mention"
+  }}
+]}}
+
+If no qualifying individual investors are found in ANY of the results, return: {{"investors": []}}
+Return ONLY valid JSON, nothing else."""
+
+
+def _extract_batch_with_gemini(api_key, batch):
+    """Call Gemini 2.0 Flash to extract investors from a batch of search results."""
+    results_text = ""
+    for i, r in enumerate(batch, 1):
+        results_text += f"\n--- Result {i} ---\nTitle: {r['title']}\nURL: {r['url']}\nSnippet: {r['snippet']}\n"
+
+    prompt = BATCH_EXTRACTION_PROMPT.format(
+        count=len(batch),
+        results_text=results_text,
     )
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers={
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json",
@@ -294,7 +364,7 @@ def _extract_with_gemini(api_key, result):
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "maxOutputTokens": 1024,
+                    "maxOutputTokens": 2048,
                     "responseMimeType": "application/json",
                 },
             },
@@ -302,7 +372,6 @@ def _extract_with_gemini(api_key, result):
         resp.raise_for_status()
         data = resp.json()
 
-        # Extract text from Gemini response
         content = data["candidates"][0]["content"]["parts"][0]["text"]
         return _parse_investor_json(content)
 
