@@ -227,21 +227,28 @@ def _search_duckduckgo(all_results, seen_urls):
 
 
 def _extract_investors_from_results(results):
-    """Use Anthropic to extract investor mentions from search results."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    """Use Gemini (primary) or Anthropic (fallback) to extract investor mentions."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if gemini_key:
+        _log("Using Gemini 2.0 Flash for extraction (cheapest option).")
+        extractor = lambda result: _extract_with_gemini(gemini_key, result)
+    elif anthropic_key:
+        _log("GEMINI_API_KEY not set. Falling back to Anthropic for extraction.")
+        extractor = lambda result: _extract_with_anthropic(anthropic_key, result)
+    else:
+        _log("No LLM API key set. Set GEMINI_API_KEY (recommended) or ANTHROPIC_API_KEY in Render Environment.")
+        _update_state(
+            phase="done",
+            phase_detail=f"Found {len(results)} search results but no LLM API key configured. Set GEMINI_API_KEY or ANTHROPIC_API_KEY.",
+        )
+        return []
 
     all_investors = []
     today = date.today().isoformat()
 
-    if not api_key:
-        _log("ANTHROPIC_API_KEY not set. Cannot extract investors from search results.")
-        _update_state(
-            phase="done",
-            phase_detail=f"Found {len(results)} search results but ANTHROPIC_API_KEY is not configured. Set it in Render Environment to enable extraction.",
-        )
-        return all_investors
-
-    _log(f"Anthropic API key present. Analyzing {len(results)} results...")
+    _log(f"Analyzing {len(results)} search results...")
 
     for i, result in enumerate(results):
         _update_state(
@@ -250,7 +257,7 @@ def _extract_investors_from_results(results):
         )
 
         try:
-            investor_data = _extract_with_anthropic(api_key, result)
+            investor_data = extractor(result)
             if investor_data:
                 _log(f"Found {len(investor_data)} investor(s) in: {result['title'][:50]}")
             for inv in investor_data:
@@ -263,13 +270,45 @@ def _extract_investors_from_results(results):
         except Exception as e:
             _log(f"Extraction error for result {i+1}: {e}")
 
-        time.sleep(0.3)
+        time.sleep(0.2)
 
     return all_investors
 
 
+def _extract_with_gemini(api_key, result):
+    """Call Gemini 2.0 Flash to extract investors from a search result."""
+    prompt = EXTRACTION_PROMPT.format(
+        title=result["title"],
+        url=result["url"],
+        snippet=result["snippet"],
+    )
+
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 1024,
+                    "responseMimeType": "application/json",
+                },
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Extract text from Gemini response
+        content = data["candidates"][0]["content"]["parts"][0]["text"]
+        return _parse_investor_json(content)
+
+
 def _extract_with_anthropic(api_key, result):
-    """Call Anthropic API to extract investors from a search result."""
+    """Call Anthropic API to extract investors from a search result (fallback)."""
     prompt = EXTRACTION_PROMPT.format(
         title=result["title"],
         url=result["url"],
@@ -292,19 +331,22 @@ def _extract_with_anthropic(api_key, result):
         )
         resp.raise_for_status()
         content = resp.json()["content"][0]["text"]
+        return _parse_investor_json(content)
 
-        # Parse JSON from response
-        try:
-            data = json.loads(content)
+
+def _parse_investor_json(content):
+    """Parse investor JSON from LLM response text."""
+    try:
+        data = json.loads(content)
+        return data.get("investors", [])
+    except json.JSONDecodeError:
+        # Try to find JSON in the response
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = json.loads(content[start:end])
             return data.get("investors", [])
-        except json.JSONDecodeError:
-            # Try to find JSON in the response
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = json.loads(content[start:end])
-                return data.get("investors", [])
-            return []
+        return []
 
 
 def _classify_source(url):
