@@ -556,16 +556,15 @@ async function pollScanStatus() {
           ? status.results_saved + " new investor(s) added."
           : "Scan complete. No new investors found.");
         showToast(msg, 8000);
-        // Log diagnostics to console
-        if (status.log && status.log.length > 0) {
-          console.log("[Scan Log]", status.log.join("\n"));
-        }
+        // Show diagnostic log in UI
+        showScanLog(status);
         // Refresh the table and stats
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
       } else if (status.phase === "error") {
         showToast("Scan error: " + (status.error || "Unknown error"), 5000);
+        showScanLog(status);
       }
     }
   } catch (err) {
@@ -597,6 +596,58 @@ function updateScanProgress(status) {
   } else if (status.phase === "saving") {
     btnSpan.textContent = "Saving...";
   }
+}
+
+/* ─── Scan Log Display ─── */
+function showScanLog(status) {
+  // Remove any existing log panel
+  var existing = document.getElementById("scan-log-panel");
+  if (existing) existing.remove();
+
+  if (!status.log || status.log.length === 0) return;
+
+  var panel = document.createElement("div");
+  panel.id = "scan-log-panel";
+  panel.style.cssText = "position:fixed; bottom:20px; right:20px; width:480px; max-height:400px; background:var(--color-bg-card); border:1px solid var(--color-border); border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.3); z-index:1000; display:flex; flex-direction:column; font-family:var(--font-mono, monospace); font-size:12px;";
+
+  var header = document.createElement("div");
+  header.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--color-border);";
+  header.innerHTML = '<strong style="color:var(--color-text);">Scan Diagnostics</strong>';
+
+  var summary = document.createElement("span");
+  summary.style.cssText = "color:var(--color-text-faint); font-size:11px;";
+  summary.textContent = "Results found: " + (status.results_found || 0) + " | Saved: " + (status.results_saved || 0) + " | Dupes: " + (status.results_duplicate || 0);
+  header.appendChild(summary);
+
+  var closeBtn = document.createElement("button");
+  closeBtn.textContent = "✕";
+  closeBtn.style.cssText = "background:none; border:none; color:var(--color-text-faint); cursor:pointer; font-size:16px; padding:0 0 0 12px;";
+  closeBtn.onclick = function() { panel.remove(); };
+  header.appendChild(closeBtn);
+
+  var body = document.createElement("div");
+  body.style.cssText = "overflow-y:auto; padding:12px 16px; flex:1;";
+
+  var logHtml = "";
+  status.log.forEach(function(line) {
+    var color = "var(--color-text-faint)";
+    if (line.includes("error") || line.includes("Error") || line.includes("blocked") || line.includes("NOT") || line.includes("not set")) {
+      color = "#ef4444";
+    } else if (line.includes("Found") || line.includes("yes") || line.includes("present")) {
+      color = "#22c55e";
+    } else if (line.includes("returned 0") || line.includes("no results") || line.includes("rate-limited")) {
+      color = "#f59e0b";
+    }
+    logHtml += '<div style="color:' + color + '; padding:2px 0; line-height:1.5;">' + escapeHtml(line) + '</div>';
+  });
+
+  body.innerHTML = logHtml;
+  panel.appendChild(header);
+  panel.appendChild(body);
+  document.body.appendChild(panel);
+
+  // Auto-dismiss after 60 seconds
+  setTimeout(function() { if (document.getElementById("scan-log-panel")) panel.remove(); }, 60000);
 }
 
 /* ─── Helpers ─── */
