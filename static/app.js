@@ -552,10 +552,14 @@ async function pollScanStatus() {
       setScanButtonState("idle");
 
       if (status.phase === "done") {
-        var msg = status.results_saved > 0
+        var msg = status.phase_detail || (status.results_saved > 0
           ? status.results_saved + " new investor(s) added."
-          : "Scan complete. No new investors found.";
-        showToast(msg, 5000);
+          : "Scan complete. No new investors found.");
+        showToast(msg, 8000);
+        // Log diagnostics to console
+        if (status.log && status.log.length > 0) {
+          console.log("[Scan Log]", status.log.join("\n"));
+        }
         // Refresh the table and stats
         fetchStats();
         fetchInvestors();

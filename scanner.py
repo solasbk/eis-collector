@@ -1,6 +1,6 @@
-"""scanner.py — EIS Investor web scanner.
+"""scanner.py -- EIS Investor web scanner.
 
-Searches DuckDuckGo for public references to individuals investing
+Searches for public references to individuals investing
 in UK EIS/SEIS qualifying companies, then uses an LLM to extract
 structured investor records.
 """
@@ -10,15 +10,14 @@ import os
 import threading
 import time
 import sqlite3
+import re
 from datetime import datetime, date
 from typing import Optional
 
 import httpx
-from duckduckgo_search import DDGS
 
-import os as _os
-DATA_DIR = _os.environ.get("DATA_DIR", ".")
-DB_PATH = _os.path.join(DATA_DIR, "eis_investors.db")
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+DB_PATH = os.path.join(DATA_DIR, "eis_investors.db")
 
 # ── Scan state (in-memory, single-instance) ──────────────────────
 _scan_lock = threading.Lock()
@@ -33,15 +32,16 @@ _scan_state = {
     "results_duplicate": 0,
     "error": None,
     "last_results": [],         # summary of last run
+    "log": [],                  # diagnostic log for debugging
 }
 
 SEARCH_QUERIES = [
-    '"EIS investor" OR "enterprise investment scheme" individual invested backed 2026',
-    'angel investor EIS UK startup funding announcement 2026',
-    '"EIS qualifying" investor personal investment UK 2026',
-    'SEIS EIS angel backed individual investor new funding round 2026',
-    '"EIS relief" angel invested startup UK',
-    'enterprise investment scheme angel round individual backing',
+    '"EIS investor" individual invested backed 2025 OR 2026',
+    'angel investor EIS UK startup funding announcement',
+    '"EIS qualifying" investor personal investment UK',
+    'SEIS EIS angel individual investor new funding round',
+    '"enterprise investment scheme" angel invested startup',
+    'EIS tax relief angel round individual backing UK',
 ]
 
 EXTRACTION_PROMPT = """You are an analyst extracting structured data about individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
@@ -87,16 +87,46 @@ def _update_state(**kwargs):
         _scan_state.update(kwargs)
 
 
+def _log(msg):
+    """Append to the diagnostic log."""
+    with _scan_lock:
+        _scan_state["log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        # Keep log to last 50 entries
+        if len(_scan_state["log"]) > 50:
+            _scan_state["log"] = _scan_state["log"][-50:]
+    print(f"[scanner] {msg}")
+
+
 def _search_web():
-    """Run searches and collect results. Tries DuckDuckGo first, falls back to Bing."""
+    """Run searches using multiple engines."""
     all_results = []
     seen_urls = set()
 
-    # Try DuckDuckGo
+    # Try DuckDuckGo first
+    ddg_count = _search_duckduckgo(all_results, seen_urls)
+    _log(f"DuckDuckGo returned {ddg_count} results")
+
+    # Try Bing
+    bing_count = _search_bing(all_results, seen_urls)
+    _log(f"Bing returned {bing_count} results")
+
+    # Try Google as additional source
+    if len(all_results) < 10:
+        google_count = _search_google(all_results, seen_urls)
+        _log(f"Google returned {google_count} results")
+
+    _log(f"Total unique search results: {len(all_results)}")
+    return all_results
+
+
+def _search_duckduckgo(all_results, seen_urls):
+    """Search via DuckDuckGo."""
+    count = 0
     try:
+        from duckduckgo_search import DDGS
         with DDGS() as ddgs:
-            for query in SEARCH_QUERIES:
-                _update_state(phase_detail=f"Searching: {query[:60]}...")
+            for query in SEARCH_QUERIES[:3]:
+                _update_state(phase_detail=f"Searching DDG: {query[:50]}...")
                 try:
                     results = list(ddgs.text(query, max_results=10, region="uk-en"))
                     for r in results:
@@ -108,35 +138,37 @@ def _search_web():
                                 "url": url,
                                 "snippet": r.get("body", ""),
                             })
+                            count += 1
                 except Exception as e:
-                    print(f"[scanner] DDG search error: {e}")
+                    _log(f"DDG query error: {e}")
                 time.sleep(0.5)
+    except ImportError:
+        _log("duckduckgo_search not installed, skipping DDG")
     except Exception as e:
-        print(f"[scanner] DDG init error: {e}")
-
-    # If DDG returned nothing, try Bing scraping
-    if not all_results:
-        _update_state(phase_detail="Primary search returned no results. Trying alternative...")
-        all_results = _search_bing(seen_urls)
-
-    return all_results
+        _log(f"DDG init error: {e}")
+    return count
 
 
-def _search_bing(seen_urls):
-    """Fallback: scrape Bing search results."""
+def _search_bing(all_results, seen_urls):
+    """Search via Bing web scraping."""
     from bs4 import BeautifulSoup
-    results = []
+    count = 0
 
-    for query in SEARCH_QUERIES[:4]:  # limit to first 4 queries
-        _update_state(phase_detail=f"Searching (alt): {query[:50]}...")
+    for query in SEARCH_QUERIES[:4]:
+        _update_state(phase_detail=f"Searching Bing: {query[:50]}...")
         try:
             resp = httpx.get(
                 "https://www.bing.com/search",
                 params={"q": query, "count": "10"},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-GB,en;q=0.9",
+                },
                 timeout=10,
                 follow_redirects=True,
             )
+            _log(f"Bing status {resp.status_code} for: {query[:40]}")
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for item in soup.select("li.b_algo"):
@@ -149,31 +181,81 @@ def _search_bing(seen_urls):
                     snippet = snippet_el.get_text(strip=True) if snippet_el else ""
                     if url and url not in seen_urls:
                         seen_urls.add(url)
-                        results.append({"title": title, "url": url, "snippet": snippet})
+                        all_results.append({"title": title, "url": url, "snippet": snippet})
+                        count += 1
+            elif resp.status_code == 403:
+                _log("Bing blocked request (403). IP may be rate-limited.")
+                break
         except Exception as e:
-            print(f"[scanner] Bing search error: {e}")
+            _log(f"Bing error: {e}")
         time.sleep(0.5)
 
-    return results
+    return count
+
+
+def _search_google(all_results, seen_urls):
+    """Search via Google web scraping."""
+    from bs4 import BeautifulSoup
+    count = 0
+
+    for query in SEARCH_QUERIES[:3]:
+        _update_state(phase_detail=f"Searching Google: {query[:50]}...")
+        try:
+            resp = httpx.get(
+                "https://www.google.com/search",
+                params={"q": query, "num": "10", "hl": "en", "gl": "uk"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-GB,en;q=0.9",
+                },
+                timeout=10,
+                follow_redirects=True,
+            )
+            _log(f"Google status {resp.status_code} for: {query[:40]}")
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for div in soup.select("div.g"):
+                    a_tag = div.select_one("a[href]")
+                    if not a_tag:
+                        continue
+                    url = a_tag.get("href", "")
+                    if not url.startswith("http"):
+                        continue
+                    title_el = div.select_one("h3")
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    snippet_el = div.select_one("div.VwiC3b") or div.select_one("span.aCOpRe")
+                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_results.append({"title": title, "url": url, "snippet": snippet})
+                        count += 1
+            elif resp.status_code == 429:
+                _log("Google rate-limited (429)")
+                break
+        except Exception as e:
+            _log(f"Google error: {e}")
+        time.sleep(1)
+
+    return count
 
 
 def _extract_investors_from_results(results):
     """Use Anthropic to extract investor mentions from search results."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        # Try reading from common locations
-        for path in ["/home/user/.anthropic_key", "/home/user/workspace/.env"]:
-            try:
-                with open(path) as f:
-                    for line in f:
-                        if "ANTHROPIC_API_KEY" in line:
-                            api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            break
-            except FileNotFoundError:
-                pass
 
     all_investors = []
     today = date.today().isoformat()
+
+    if not api_key:
+        _log("ANTHROPIC_API_KEY not set. Cannot extract investors from search results.")
+        _update_state(
+            phase="done",
+            phase_detail=f"Found {len(results)} search results but ANTHROPIC_API_KEY is not configured. Set it in Render Environment to enable extraction.",
+        )
+        return all_investors
+
+    _log(f"Anthropic API key present. Analyzing {len(results)} results...")
 
     for i, result in enumerate(results):
         _update_state(
@@ -181,26 +263,19 @@ def _extract_investors_from_results(results):
             phase_detail=f"Analyzing result {i+1}/{len(results)}: {result['title'][:50]}..."
         )
 
-        if api_key:
-            # Use Anthropic for extraction
-            try:
-                investor_data = _extract_with_anthropic(api_key, result)
-                for inv in investor_data:
-                    inv["source_url"] = result["url"]
-                    inv["source_type"] = _classify_source(result["url"])
-                    inv["source_name"] = _extract_source_name(result["url"], result["title"])
-                    inv["date_found"] = today
-                    inv["linkedin_url"] = None
-                    all_investors.append(inv)
-            except Exception as e:
-                print(f"[scanner] Extraction error: {e}")
-        else:
-            # Fallback: simple keyword-based extraction (less accurate)
-            investors = _extract_simple(result)
-            for inv in investors:
+        try:
+            investor_data = _extract_with_anthropic(api_key, result)
+            if investor_data:
+                _log(f"Found {len(investor_data)} investor(s) in: {result['title'][:50]}")
+            for inv in investor_data:
+                inv["source_url"] = result["url"]
+                inv["source_type"] = _classify_source(result["url"])
+                inv["source_name"] = _extract_source_name(result["url"], result["title"])
                 inv["date_found"] = today
                 inv["linkedin_url"] = None
                 all_investors.append(inv)
+        except Exception as e:
+            _log(f"Extraction error for result {i+1}: {e}")
 
         time.sleep(0.3)
 
@@ -246,13 +321,6 @@ def _extract_with_anthropic(api_key, result):
             return []
 
 
-def _extract_simple(result):
-    """Fallback: simple keyword extraction without LLM."""
-    # Very basic -- looks for patterns like "Name invested" or "Name backed"
-    # This is a rough fallback; LLM extraction is much better
-    return []
-
-
 def _classify_source(url):
     """Classify source type from URL."""
     url_lower = url.lower()
@@ -270,7 +338,6 @@ def _extract_source_name(url, title):
     from urllib.parse import urlparse
     try:
         domain = urlparse(url).netloc.replace("www.", "")
-        # Common mappings
         mappings = {
             "techcrunch.com": "TechCrunch",
             "ft.com": "Financial Times",
@@ -332,7 +399,7 @@ def run_scan():
     """Execute a full scan cycle. Runs in a background thread."""
     with _scan_lock:
         if _scan_state["running"]:
-            return False  # Already running
+            return False
         _scan_state.update({
             "running": True,
             "started_at": datetime.now().isoformat(),
@@ -344,22 +411,24 @@ def run_scan():
             "results_duplicate": 0,
             "error": None,
             "last_results": [],
+            "log": [],
         })
 
     def _run():
         try:
             # Phase 1: Search
             _update_state(phase="searching", phase_detail="Searching for EIS investor references...")
+            _log("Scan started")
+            _log(f"ANTHROPIC_API_KEY set: {'yes' if os.environ.get('ANTHROPIC_API_KEY') else 'NO'}")
+
             search_results = _search_web()
-            _update_state(
-                phase_detail=f"Found {len(search_results)} search results to analyze",
-                results_found=len(search_results),
-            )
+            _update_state(results_found=len(search_results))
 
             if not search_results:
+                _log("No search results from any engine. Server IP may be blocked by search engines.")
                 _update_state(
                     phase="done",
-                    phase_detail="No relevant search results found.",
+                    phase_detail="Web search returned no results. Search engines may be blocking requests from this server.",
                     running=False,
                     finished_at=datetime.now().isoformat(),
                 )
@@ -370,12 +439,18 @@ def run_scan():
             investors = _extract_investors_from_results(search_results)
 
             if not investors:
+                # Check if it was because of missing API key
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if not api_key:
+                    detail = f"Found {len(search_results)} search results but ANTHROPIC_API_KEY is not set. Configure it in Render Environment to enable extraction."
+                else:
+                    detail = f"Analyzed {len(search_results)} results. No named individual EIS investors found."
+                _log(detail)
                 _update_state(
                     phase="done",
-                    phase_detail="No named individual EIS investors found in results.",
+                    phase_detail=detail,
                     running=False,
                     finished_at=datetime.now().isoformat(),
-                    results_found=len(search_results),
                 )
                 return
 
@@ -385,15 +460,12 @@ def run_scan():
                 phase_detail=f"Saving {len(investors)} investor(s) to database..."
             )
             inserted, duplicated = _save_to_db(investors)
+            _log(f"Saved: {inserted} new, {duplicated} duplicates")
 
-            # Build summary
-            last_results = []
-            for inv in investors:
-                last_results.append({
-                    "name": inv.get("name"),
-                    "eis_company": inv.get("eis_company"),
-                    "new": True,  # simplified; would need to track per-record
-                })
+            last_results = [
+                {"name": inv.get("name"), "eis_company": inv.get("eis_company")}
+                for inv in investors
+            ]
 
             _update_state(
                 phase="done",
@@ -406,6 +478,7 @@ def run_scan():
             )
 
         except Exception as e:
+            _log(f"Scan error: {e}")
             _update_state(
                 phase="error",
                 phase_detail=str(e),
