@@ -98,29 +98,80 @@ def _log(msg):
 
 
 def _search_web():
-    """Run searches using multiple engines."""
+    """Run searches using Serper API (primary) with fallbacks."""
     all_results = []
     seen_urls = set()
 
-    # Try DuckDuckGo first
-    ddg_count = _search_duckduckgo(all_results, seen_urls)
-    _log(f"DuckDuckGo returned {ddg_count} results")
+    serper_key = os.environ.get("SERPER_API_KEY", "")
 
-    # Try Bing
-    bing_count = _search_bing(all_results, seen_urls)
-    _log(f"Bing returned {bing_count} results")
-
-    # Try Google as additional source
-    if len(all_results) < 10:
-        google_count = _search_google(all_results, seen_urls)
-        _log(f"Google returned {google_count} results")
+    if serper_key:
+        _log("SERPER_API_KEY found. Using Serper Google Search API.")
+        serper_count = _search_serper(all_results, seen_urls, serper_key)
+        _log(f"Serper returned {serper_count} results")
+    else:
+        _log("SERPER_API_KEY not set. Falling back to direct search (may be blocked on cloud servers).")
+        # Fallback to DuckDuckGo
+        ddg_count = _search_duckduckgo(all_results, seen_urls)
+        _log(f"DuckDuckGo returned {ddg_count} results")
 
     _log(f"Total unique search results: {len(all_results)}")
     return all_results
 
 
+def _search_serper(all_results, seen_urls, api_key):
+    """Search via Serper.dev Google Search API."""
+    count = 0
+
+    for query in SEARCH_QUERIES:
+        _update_state(phase_detail=f"Searching Google (API): {query[:50]}...")
+        try:
+            resp = httpx.post(
+                "https://google.serper.dev/search",
+                headers={
+                    "X-API-KEY": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "q": query,
+                    "gl": "uk",
+                    "hl": "en",
+                    "num": 20,
+                },
+                timeout=15,
+            )
+            _log(f"Serper status {resp.status_code} for: {query[:40]}")
+
+            if resp.status_code == 200:
+                data = resp.json()
+                organic = data.get("organic", [])
+                for r in organic:
+                    url = r.get("link", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_results.append({
+                            "title": r.get("title", ""),
+                            "url": url,
+                            "snippet": r.get("snippet", ""),
+                        })
+                        count += 1
+                _log(f"  -> {len(organic)} organic results from this query")
+            elif resp.status_code == 401:
+                _log("Serper API key is invalid (401). Check SERPER_API_KEY.")
+                break
+            elif resp.status_code == 429:
+                _log("Serper rate limit hit (429). Waiting...")
+                time.sleep(5)
+            else:
+                _log(f"Serper unexpected status {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            _log(f"Serper error: {e}")
+        time.sleep(0.3)
+
+    return count
+
+
 def _search_duckduckgo(all_results, seen_urls):
-    """Search via DuckDuckGo."""
+    """Search via DuckDuckGo (fallback if no Serper key)."""
     count = 0
     try:
         from duckduckgo_search import DDGS
@@ -146,97 +197,6 @@ def _search_duckduckgo(all_results, seen_urls):
         _log("duckduckgo_search not installed, skipping DDG")
     except Exception as e:
         _log(f"DDG init error: {e}")
-    return count
-
-
-def _search_bing(all_results, seen_urls):
-    """Search via Bing web scraping."""
-    from bs4 import BeautifulSoup
-    count = 0
-
-    for query in SEARCH_QUERIES[:4]:
-        _update_state(phase_detail=f"Searching Bing: {query[:50]}...")
-        try:
-            resp = httpx.get(
-                "https://www.bing.com/search",
-                params={"q": query, "count": "10"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "en-GB,en;q=0.9",
-                },
-                timeout=10,
-                follow_redirects=True,
-            )
-            _log(f"Bing status {resp.status_code} for: {query[:40]}")
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for item in soup.select("li.b_algo"):
-                    a_tag = item.select_one("h2 a")
-                    if not a_tag:
-                        continue
-                    url = a_tag.get("href", "")
-                    title = a_tag.get_text(strip=True)
-                    snippet_el = item.select_one(".b_caption p")
-                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        all_results.append({"title": title, "url": url, "snippet": snippet})
-                        count += 1
-            elif resp.status_code == 403:
-                _log("Bing blocked request (403). IP may be rate-limited.")
-                break
-        except Exception as e:
-            _log(f"Bing error: {e}")
-        time.sleep(0.5)
-
-    return count
-
-
-def _search_google(all_results, seen_urls):
-    """Search via Google web scraping."""
-    from bs4 import BeautifulSoup
-    count = 0
-
-    for query in SEARCH_QUERIES[:3]:
-        _update_state(phase_detail=f"Searching Google: {query[:50]}...")
-        try:
-            resp = httpx.get(
-                "https://www.google.com/search",
-                params={"q": query, "num": "10", "hl": "en", "gl": "uk"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "en-GB,en;q=0.9",
-                },
-                timeout=10,
-                follow_redirects=True,
-            )
-            _log(f"Google status {resp.status_code} for: {query[:40]}")
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for div in soup.select("div.g"):
-                    a_tag = div.select_one("a[href]")
-                    if not a_tag:
-                        continue
-                    url = a_tag.get("href", "")
-                    if not url.startswith("http"):
-                        continue
-                    title_el = div.select_one("h3")
-                    title = title_el.get_text(strip=True) if title_el else ""
-                    snippet_el = div.select_one("div.VwiC3b") or div.select_one("span.aCOpRe")
-                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        all_results.append({"title": title, "url": url, "snippet": snippet})
-                        count += 1
-            elif resp.status_code == 429:
-                _log("Google rate-limited (429)")
-                break
-        except Exception as e:
-            _log(f"Google error: {e}")
-        time.sleep(1)
-
     return count
 
 
