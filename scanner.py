@@ -207,15 +207,15 @@ def _extract_investors_from_results(results):
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
-    # Build ordered list of providers to try (Anthropic primary — confirmed working)
+    # Build ordered list of providers to try (Gemini primary — cheapest)
     providers = []
-    if anthropic_key:
-        providers.append(("anthropic", anthropic_key))
     if gemini_key:
         providers.append(("gemini", gemini_key))
+    if anthropic_key:
+        providers.append(("anthropic", anthropic_key))
 
     if not providers:
-        _log("No LLM API key set. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in Render Environment.")
+        _log("No LLM API key set. Set GEMINI_API_KEY or ANTHROPIC_API_KEY in Render Environment.")
         _update_state(
             phase="done",
             phase_detail=f"Found {len(results)} search results but no LLM API key configured.",
@@ -428,10 +428,10 @@ def _extract_from_page(provider, api_key, result, page_text):
 
 
 def _call_gemini(api_key, prompt):
-    """Call Gemini 2.0 Flash API."""
+    """Call Gemini 2.5 Flash API."""
     with httpx.Client(timeout=60) as client:
         resp = client.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
             headers={
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json",
