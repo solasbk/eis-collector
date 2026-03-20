@@ -67,24 +67,23 @@ SEARCH_QUERIES = [
     '"angel investor" UK profile invested EIS qualifying companies portfolio',
 ]
 
-EXTRACTION_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
+# ── Extraction config ────────────────────────────────────────────
+BATCH_SIZE = 10  # search results per LLM call
 
-Given the following search result snippet, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company that is likely EIS/SEIS qualifying.
+BATCH_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
 
-Search result:
-Title: {title}
-URL: {url}
-Snippet: {snippet}
+Below are {count} search results. For EACH result, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company.
+
+{results_text}
 
 Rules:
 - Extract NAMED INDIVIDUALS (first and last name required) who are described as investing, backing, or funding a company
-- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned — most UK seed/early-stage investments in small companies qualify for EIS/SEIS
+- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned
 - INCLUDE angel investors, seed investors, individual backers mentioned by name
 - INCLUDE people listed as investors on crowdfunding platforms (Seedrs, Crowdcube, etc.)
 - EXCLUDE fund managers, VCs, or advisors who are only mentioned as managing funds (not making personal investments)
 - EXCLUDE company names without an associated individual's name
 - EXCLUDE generic mentions like "angel investors" without specific names
-- If no qualifying individual investor is found, return: {{"investors": []}}
 
 Return a JSON object with:
 {{"investors": [
@@ -95,10 +94,12 @@ Return a JSON object with:
     "eis_company": "The company they invested in",
     "sector": "The invested company's sector (brief)",
     "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
-    "context_quote": "A brief quote from the snippet showing the investment mention"
+    "source_url": "The URL of the search result where this investor was found",
+    "context_quote": "A brief quote showing the investment mention"
   }}
 ]}}
 
+If no qualifying individual investors are found in ANY of the results, return: {{"investors": []}}
 Return ONLY valid JSON, nothing else."""
 
 
@@ -117,11 +118,13 @@ def _log(msg):
     """Append to the diagnostic log."""
     with _scan_lock:
         _scan_state["log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-        # Keep log to last 50 entries
-        if len(_scan_state["log"]) > 50:
-            _scan_state["log"] = _scan_state["log"][-50:]
+        # Keep log to last 80 entries
+        if len(_scan_state["log"]) > 80:
+            _scan_state["log"] = _scan_state["log"][-80:]
     print(f"[scanner] {msg}")
 
+
+# ── Search ───────────────────────────────────────────────────────
 
 def _search_web():
     """Run searches using Serper API (primary) with fallbacks."""
@@ -136,7 +139,6 @@ def _search_web():
         _log(f"Serper returned {serper_count} results")
     else:
         _log("SERPER_API_KEY not set. Falling back to direct search (may be blocked on cloud servers).")
-        # Fallback to DuckDuckGo
         ddg_count = _search_duckduckgo(all_results, seen_urls)
         _log(f"DuckDuckGo returned {ddg_count} results")
 
@@ -226,28 +228,28 @@ def _search_duckduckgo(all_results, seen_urls):
     return count
 
 
-# Gemini free tier: 15 RPM. We batch 5 results per call = ~37 calls for 183 results.
-# With 4.5s spacing that's ~3 min, well within 15 RPM.
-BATCH_SIZE = 5
-GEMINI_DELAY = 4.5  # seconds between calls to stay under 15 RPM
-
+# ── Extraction ───────────────────────────────────────────────────
 
 def _extract_investors_from_results(results):
-    """Use Gemini (primary) or Anthropic (fallback) to extract investor mentions."""
+    """Extract investor mentions using batched LLM calls.
+    Priority: Gemini (cheapest) > Anthropic (fallback).
+    """
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if gemini_key:
-        _log("Using Gemini 2.0 Flash for extraction (batched, rate-limited).")
-        use_gemini = True
+        _log("Using Gemini 2.0 Flash for extraction (paid tier).")
+        provider = "gemini"
+        api_key = gemini_key
     elif anthropic_key:
-        _log("GEMINI_API_KEY not set. Falling back to Anthropic for extraction.")
-        use_gemini = False
+        _log("Using Anthropic Claude Haiku for extraction.")
+        provider = "anthropic"
+        api_key = anthropic_key
     else:
-        _log("No LLM API key set. Set GEMINI_API_KEY (recommended) or ANTHROPIC_API_KEY in Render Environment.")
+        _log("No LLM API key set. Set GEMINI_API_KEY or ANTHROPIC_API_KEY in Render Environment.")
         _update_state(
             phase="done",
-            phase_detail=f"Found {len(results)} search results but no LLM API key configured. Set GEMINI_API_KEY or ANTHROPIC_API_KEY.",
+            phase_detail=f"Found {len(results)} search results but no LLM API key configured.",
         )
         return []
 
@@ -256,103 +258,89 @@ def _extract_investors_from_results(results):
 
     _log(f"Analyzing {len(results)} search results...")
 
-    if use_gemini:
-        # Batch results to reduce API calls and respect rate limits
-        batches = [results[i:i + BATCH_SIZE] for i in range(0, len(results), BATCH_SIZE)]
-        _log(f"Processing in {len(batches)} batches of up to {BATCH_SIZE}")
+    batches = [results[i:i + BATCH_SIZE] for i in range(0, len(results), BATCH_SIZE)]
+    _log(f"Processing in {len(batches)} batches of up to {BATCH_SIZE}")
 
-        for batch_idx, batch in enumerate(batches):
-            _update_state(
-                phase="extracting",
-                phase_detail=f"Analyzing batch {batch_idx + 1}/{len(batches)} ({batch_idx * BATCH_SIZE + 1}-{min((batch_idx + 1) * BATCH_SIZE, len(results))} of {len(results)})..."
-            )
+    consecutive_errors = 0
 
-            try:
-                investor_data = _extract_batch_with_gemini(gemini_key, batch)
-                if investor_data:
-                    _log(f"Batch {batch_idx + 1}: found {len(investor_data)} investor(s)")
-                for inv in investor_data:
-                    inv.setdefault("source_url", "")
-                    inv["source_type"] = _classify_source(inv.get("source_url", ""))
-                    inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
-                    inv["date_found"] = today
-                    inv["linkedin_url"] = None
-                    all_investors.append(inv)
-            except Exception as e:
-                _log(f"Batch {batch_idx + 1} error: {e}")
+    for batch_idx, batch in enumerate(batches):
+        _update_state(
+            phase="extracting",
+            phase_detail=f"Analyzing batch {batch_idx + 1}/{len(batches)} ({batch_idx * BATCH_SIZE + 1}-{min((batch_idx + 1) * BATCH_SIZE, len(results))} of {len(results)})..."
+        )
 
-            # Rate limit: wait between batches
-            if batch_idx < len(batches) - 1:
-                time.sleep(GEMINI_DELAY)
-    else:
-        # Anthropic path: one result at a time (higher rate limits)
-        for i, result in enumerate(results):
-            _update_state(
-                phase="extracting",
-                phase_detail=f"Analyzing result {i+1}/{len(results)}: {result['title'][:50]}..."
-            )
-            try:
-                investor_data = _extract_with_anthropic(anthropic_key, result)
-                if investor_data:
-                    _log(f"Found {len(investor_data)} investor(s) in: {result['title'][:50]}")
-                for inv in investor_data:
-                    inv["source_url"] = result["url"]
-                    inv["source_type"] = _classify_source(result["url"])
-                    inv["source_name"] = _extract_source_name(result["url"], result["title"])
-                    inv["date_found"] = today
-                    inv["linkedin_url"] = None
-                    all_investors.append(inv)
-            except Exception as e:
-                _log(f"Extraction error for result {i+1}: {e}")
-            time.sleep(0.3)
+        try:
+            investor_data = _extract_batch(provider, api_key, batch)
+            consecutive_errors = 0  # reset on success
+            if investor_data:
+                _log(f"Batch {batch_idx + 1}: found {len(investor_data)} investor(s)")
+            else:
+                _log(f"Batch {batch_idx + 1}: no investors found")
+            for inv in investor_data:
+                inv.setdefault("source_url", "")
+                inv["source_type"] = _classify_source(inv.get("source_url", ""))
+                inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
+                inv["date_found"] = today
+                inv["linkedin_url"] = None
+                all_investors.append(inv)
+        except Exception as e:
+            consecutive_errors += 1
+            err_str = str(e)
+            _log(f"Batch {batch_idx + 1} error: {err_str[:150]}")
+
+            # If rate limited, back off and retry
+            if "429" in err_str:
+                wait = min(30 * consecutive_errors, 120)
+                _log(f"Rate limited. Waiting {wait}s before retry...")
+                time.sleep(wait)
+                try:
+                    investor_data = _extract_batch(provider, api_key, batch)
+                    consecutive_errors = 0
+                    if investor_data:
+                        _log(f"Batch {batch_idx + 1} retry: found {len(investor_data)} investor(s)")
+                    for inv in investor_data:
+                        inv.setdefault("source_url", "")
+                        inv["source_type"] = _classify_source(inv.get("source_url", ""))
+                        inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
+                        inv["date_found"] = today
+                        inv["linkedin_url"] = None
+                        all_investors.append(inv)
+                except Exception as e2:
+                    _log(f"Batch {batch_idx + 1} retry failed: {str(e2)[:150]}")
+                    consecutive_errors += 1
+
+            # Abort after too many consecutive failures
+            if consecutive_errors >= 5:
+                _log(f"Aborting extraction after {consecutive_errors} consecutive errors.")
+                break
+
+        # Small delay between batches to be polite
+        if batch_idx < len(batches) - 1:
+            time.sleep(1.0)
 
     return all_investors
 
 
-BATCH_EXTRACTION_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
-
-Below are {count} search results. For EACH result, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company.
-
-{results_text}
-
-Rules:
-- Extract NAMED INDIVIDUALS (first and last name required) who are described as investing, backing, or funding a company
-- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned
-- INCLUDE angel investors, seed investors, individual backers mentioned by name
-- INCLUDE people listed as investors on crowdfunding platforms (Seedrs, Crowdcube, etc.)
-- EXCLUDE fund managers, VCs, or advisors who are only mentioned as managing funds (not making personal investments)
-- EXCLUDE company names without an associated individual's name
-- EXCLUDE generic mentions like "angel investors" without specific names
-
-Return a JSON object with:
-{{"investors": [
-  {{
-    "name": "Full Name",
-    "role": "Their professional role/title (or 'Angel Investor' if unknown)",
-    "company": "Their employer/firm (or 'Independent' if unknown)",
-    "eis_company": "The company they invested in",
-    "sector": "The invested company's sector (brief)",
-    "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
-    "source_url": "The URL of the search result where this investor was found",
-    "context_quote": "A brief quote showing the investment mention"
-  }}
-]}}
-
-If no qualifying individual investors are found in ANY of the results, return: {{"investors": []}}
-Return ONLY valid JSON, nothing else."""
-
-
-def _extract_batch_with_gemini(api_key, batch):
-    """Call Gemini 2.0 Flash to extract investors from a batch of search results."""
+def _build_batch_prompt(batch):
+    """Build the prompt text for a batch of search results."""
     results_text = ""
     for i, r in enumerate(batch, 1):
         results_text += f"\n--- Result {i} ---\nTitle: {r['title']}\nURL: {r['url']}\nSnippet: {r['snippet']}\n"
+    return BATCH_PROMPT.format(count=len(batch), results_text=results_text)
 
-    prompt = BATCH_EXTRACTION_PROMPT.format(
-        count=len(batch),
-        results_text=results_text,
-    )
 
+def _extract_batch(provider, api_key, batch):
+    """Extract investors from a batch using the specified provider."""
+    prompt = _build_batch_prompt(batch)
+
+    if provider == "gemini":
+        return _call_gemini(api_key, prompt)
+    else:
+        return _call_anthropic(api_key, prompt)
+
+
+def _call_gemini(api_key, prompt):
+    """Call Gemini 2.0 Flash API."""
     with httpx.Client(timeout=60) as client:
         resp = client.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
@@ -364,27 +352,20 @@ def _extract_batch_with_gemini(api_key, batch):
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "maxOutputTokens": 2048,
+                    "maxOutputTokens": 4096,
                     "responseMimeType": "application/json",
                 },
             },
         )
         resp.raise_for_status()
         data = resp.json()
-
         content = data["candidates"][0]["content"]["parts"][0]["text"]
         return _parse_investor_json(content)
 
 
-def _extract_with_anthropic(api_key, result):
-    """Call Anthropic API to extract investors from a search result (fallback)."""
-    prompt = EXTRACTION_PROMPT.format(
-        title=result["title"],
-        url=result["url"],
-        snippet=result["snippet"],
-    )
-
-    with httpx.Client(timeout=30) as client:
+def _call_anthropic(api_key, prompt):
+    """Call Anthropic Claude Haiku API."""
+    with httpx.Client(timeout=60) as client:
         resp = client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -394,7 +375,7 @@ def _extract_with_anthropic(api_key, result):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
@@ -417,6 +398,8 @@ def _parse_investor_json(content):
             return data.get("investors", [])
         return []
 
+
+# ── Helpers ──────────────────────────────────────────────────────
 
 def _classify_source(url):
     """Classify source type from URL."""
@@ -492,6 +475,8 @@ def _save_to_db(investors):
     return inserted, duplicated
 
 
+# ── Main scan entry point ────────────────────────────────────────
+
 def run_scan():
     """Execute a full scan cycle. Runs in a background thread."""
     with _scan_lock:
@@ -516,16 +501,18 @@ def run_scan():
             # Phase 1: Search
             _update_state(phase="searching", phase_detail="Searching for EIS investor references...")
             _log("Scan started")
+            _log(f"GEMINI_API_KEY set: {'yes' if os.environ.get('GEMINI_API_KEY') else 'NO'}")
             _log(f"ANTHROPIC_API_KEY set: {'yes' if os.environ.get('ANTHROPIC_API_KEY') else 'NO'}")
+            _log(f"SERPER_API_KEY set: {'yes' if os.environ.get('SERPER_API_KEY') else 'NO'}")
 
             search_results = _search_web()
             _update_state(results_found=len(search_results))
 
             if not search_results:
-                _log("No search results from any engine. Server IP may be blocked by search engines.")
+                _log("No search results from any engine.")
                 _update_state(
                     phase="done",
-                    phase_detail="Web search returned no results. Search engines may be blocking requests from this server.",
+                    phase_detail="Web search returned no results.",
                     running=False,
                     finished_at=datetime.now().isoformat(),
                 )
@@ -536,12 +523,7 @@ def run_scan():
             investors = _extract_investors_from_results(search_results)
 
             if not investors:
-                # Check if it was because of missing API key
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-                if not api_key:
-                    detail = f"Found {len(search_results)} search results but ANTHROPIC_API_KEY is not set. Configure it in Render Environment to enable extraction."
-                else:
-                    detail = f"Analyzed {len(search_results)} results. No named individual EIS investors found."
+                detail = f"Analyzed {len(search_results)} results. No named individual EIS investors found."
                 _log(detail)
                 _update_state(
                     phase="done",
