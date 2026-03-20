@@ -36,40 +36,124 @@ _scan_state = {
 }
 
 SEARCH_QUERIES = [
-    # Direct EIS/SEIS mentions
-    '"EIS investor" OR "SEIS investor" individual name invested 2024 OR 2025 OR 2026',
+    # ── Direct EIS/SEIS mentions ──────────────────────────────────
+    '"EIS investor" OR "SEIS investor" individual name invested',
     '"enterprise investment scheme" angel investor backed funded UK',
     '"EIS qualifying" investment round individual investor announcement',
     '"SEIS funding" OR "EIS funding" angel investor name UK startup',
     'EIS tax relief investor personal investment UK company',
+    '"EIS relief" investor portfolio company invested UK',
 
-    # Angel investment & seed rounds (UK focus — many are EIS-qualifying)
+    # ── Angel investment & seed rounds (UK focus) ─────────────────
     'UK angel investor seed round funded startup 2025 OR 2026',
+    'UK angel investor seed round funded startup 2023 OR 2024',
+    'UK angel investor seed round funded startup 2021 OR 2022',
     'UK angel investment announcement individual investor backed',
     'angel investor UK "led the round" OR "participated in" seed pre-seed',
-    'UK startup seed funding announcement investor names 2025',
+    'UK startup seed funding announcement investor names',
     'UK early stage investor "angel round" OR "seed round" funded',
+    '"angel investor" UK backed startup Series A individual',
+    'UK startup "pre-seed" OR "seed" funding round individual investors named',
 
-    # EIS fund managers and networks — they list investors/deals
-    'site:seedrs.com OR site:crowdcube.com investor funded EIS',
-    'site:linkedin.com "EIS" OR "SEIS" "angel investor" UK invested',
+    # ── EIS fund managers, networks, and syndicates ───────────────
     'Mercia OR Deepbridge OR Maven OR "Octopus Ventures" EIS investment individual investor',
-    'UK angel network deal completed investor names 2025 OR 2026',
+    'UK angel network deal completed investor names',
     '"angel syndicate" UK investor invested startup EIS SEIS',
+    '"angel investing" UK member portfolio companies invested',
+    'UK "angel group" OR "angel network" members investors deals',
+    'Cambridge Angels OR London Business Angels OR Archangels investor portfolio',
+    'Midlands Engine OR Northern Powerhouse angel investor EIS backed',
+    '"angel CoFund" OR "angel co-investment" UK individual investors',
 
-    # Companies House and regulatory filings
-    '"allotment of shares" EIS investor UK 2025 OR 2026',
+    # ── Crowdfunding platforms (named investors) ──────────────────
+    'site:seedrs.com investor funded EIS campaign',
+    'site:crowdcube.com investor backed raised EIS',
+    'site:syndicateroom.com investor funded EIS portfolio',
+    'crowdfunding UK "lead investor" OR "angel investor" name funded',
+
+    # ── VCTs and EIS funds (name individual directors/investors) ──
+    'VCT investor director UK "venture capital trust" individual',
+    '"EIS fund" investor portfolio UK individual name invested',
+    'Baronsmead OR Mobeus OR ProVen OR Albion VCT investor director',
+    'Puma Investments OR Calculus Capital OR Triple Point EIS individual investor',
+
+    # ── Companies House and regulatory filings ────────────────────
+    '"allotment of shares" EIS investor UK',
     'UK startup "share allotment" individual investor SEIS EIS',
+    'site:find-and-update.company-information.service.gov.uk "allotment" shares investor',
 
-    # Industry press and directories
+    # ── Industry press and directories ────────────────────────────
     'site:uktech.news OR site:sifted.eu investor angel funded UK startup',
-    'site:beauhurst.com OR site:growthbusiness.co.uk angel investor UK EIS',
+    'site:beauhurst.com angel investor UK EIS portfolio',
+    'site:growthbusiness.co.uk angel investor UK startup funded',
+    'site:techcrunch.com UK angel investor seed funded startup',
+    'site:cityam.com angel investor UK startup funded backed',
+    'site:altfi.com investor EIS SEIS funded UK fintech',
     '"angel investor" UK profile invested EIS qualifying companies portfolio',
+    'site:eu-startups.com UK angel investor funded startup seed',
+
+    # ── LinkedIn and social profiles ──────────────────────────────
+    'site:linkedin.com "EIS" OR "SEIS" "angel investor" UK invested',
+    'site:linkedin.com "angel investor" UK "invested in" startup portfolio',
+
+    # ── Historical and broader date ranges ────────────────────────
+    '"EIS investor" UK angel invested startup 2020 OR 2021',
+    '"angel investor" UK startup seed round funded 2022 OR 2023',
+    'UK angel investment round announcement names 2020 2021 2022',
+    'UK "EIS" investment individual investor announcement 2019 OR 2020',
+
+    # ── Awards, lists, and directories of angel investors ─────────
+    'UK "angel investor of the year" OR "angel investor award" names',
+    '"top angel investors" UK list names EIS SEIS',
+    '"most active angel investors" UK 2024 OR 2025 OR 2026',
+    'UK angel investor directory list names profiles',
+    'UKBAA OR "UK Business Angels Association" investor members',
+
+    # ── Specific high-value sources ───────────────────────────────
+    'site:pitchbook.com UK angel investor EIS seed funded',
+    'site:crunchbase.com UK angel investor seed funded individual',
+    'site:dealroom.co UK angel investor funded startup seed',
+    'site:businesscloud.co.uk angel investor funded UK startup',
+    'site:startups.co.uk angel investor EIS funded round',
+]
+
+# ── Direct source URLs to browse for investor names ──────────────
+# These are known pages that list investors, portfolios, or deals.
+# The scanner fetches these directly (no search needed) and extracts names.
+DIRECT_SOURCES = [
+    # Angel networks — member/portfolio pages
+    "https://www.angelsden.com/investors",
+    "https://www.cambridgeangels.com/members",
+    "https://www.londonbusinessangels.co.uk/our-angels",
+    "https://www.archangelsinvestors.com/team",
+    "https://www.gabrieltechnology.com/team",
+    "https://www.midlandsengine.org/investment-fund/",
+    "https://www.syndicateroom.com/investors",
+    # Crowdfunding — recent funded campaigns (investor lists)
+    "https://www.seedrs.com/invest/campaigns?status=funded",
+    "https://www.crowdcube.com/explore/funded",
+    # EIS/VCT fund managers — team and investor pages
+    "https://www.oxfordcapital.co.uk/team/",
+    "https://www.parequity.com/team/",
+    "https://www.calculus.co.uk/about-us/team/",
+    "https://www.pumainvestments.co.uk/about-us/team/",
+    "https://www.triplepoint.co.uk/our-team/",
+    # Beauhurst angel investor listings
+    "https://www.beauhurst.com/research/angel-investors-uk/",
+    "https://www.beauhurst.com/research/top-angel-investors/",
+    # Tech press — investor roundups
+    "https://www.uktech.news/tag/angel-investor",
+    "https://sifted.eu/sector/angel-investment",
+    "https://www.growthbusiness.co.uk/tag/angel-investment",
+    # UKBAA member directories
+    "https://www.ukbaa.org.uk/member-directory/",
+    # Startups.co.uk investor pages
+    "https://startups.co.uk/funding/angel-investors/",
 ]
 
 # ── Extraction config ────────────────────────────────────────────
 BATCH_SIZE = 10  # search results per LLM call (snippet mode)
-PAGE_FETCH_LIMIT = 30  # max pages to fetch full content from
+PAGE_FETCH_LIMIT = 80  # max pages to fetch full content from
 PAGE_MAX_CHARS = 8000  # max chars to send from each page
 
 
@@ -90,16 +174,16 @@ def _log(msg):
     """Append to the diagnostic log."""
     with _scan_lock:
         _scan_state["log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-        # Keep log to last 80 entries
-        if len(_scan_state["log"]) > 80:
-            _scan_state["log"] = _scan_state["log"][-80:]
+        # Keep log to last 150 entries
+        if len(_scan_state["log"]) > 150:
+            _scan_state["log"] = _scan_state["log"][-150:]
     print(f"[scanner] {msg}")
 
 
 # ── Search ───────────────────────────────────────────────────────
 
 def _search_web():
-    """Run searches using Serper API (primary) with fallbacks."""
+    """Run searches using Serper API (primary) with fallbacks, plus direct sources."""
     all_results = []
     seen_urls = set()
 
@@ -113,6 +197,20 @@ def _search_web():
         _log("SERPER_API_KEY not set. Falling back to direct search (may be blocked on cloud servers).")
         ddg_count = _search_duckduckgo(all_results, seen_urls)
         _log(f"DuckDuckGo returned {ddg_count} results")
+
+    # Add direct source URLs (known investor list pages)
+    direct_count = 0
+    for url in DIRECT_SOURCES:
+        if url not in seen_urls:
+            seen_urls.add(url)
+            all_results.append({
+                "title": "[Direct Source] " + url.split("//")[1].split("/")[0],
+                "url": url,
+                "snippet": "",
+                "_direct": True,  # flag for scoring boost
+            })
+            direct_count += 1
+    _log(f"Added {direct_count} direct source URLs")
 
     _log(f"Total unique search results: {len(all_results)}")
     return all_results
@@ -312,6 +410,10 @@ def _score_results(results):
         score = 0
         text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
 
+        # Direct sources get high priority (known investor list pages)
+        if r.get("_direct"):
+            score += 10
+
         # High-value signals
         if any(w in text for w in ["angel investor", "angel round", "seed round", "backed by", "invested in"]):
             score += 3
@@ -321,15 +423,21 @@ def _score_results(results):
             score += 2
         if any(w in text for w in ["individual", "personally invested", "angel network"]):
             score += 2
+        if any(w in text for w in ["portfolio", "our investors", "member", "backed companies"]):
+            score += 2
 
         # Source quality signals
         url = r.get("url", "").lower()
         if any(d in url for d in ["techcrunch", "sifted", "uktech.news", "cityam", "growthbusiness"]):
             score += 2
-        if any(d in url for d in ["seedrs.com", "crowdcube.com", "beauhurst.com"]):
+        if any(d in url for d in ["seedrs.com", "crowdcube.com", "beauhurst.com", "syndicateroom.com"]):
+            score += 3
+        if any(d in url for d in ["crunchbase.com", "pitchbook.com", "dealroom.co"]):
             score += 2
-        if any(d in url for d in ["linkedin.com", "companieshouse"]):
+        if any(d in url for d in ["linkedin.com", "companieshouse", "company-information.service.gov.uk"]):
             score += 1
+        if any(d in url for d in ["angelsden.com", "cambridgeangels", "londonbusinessangels", "ukbaa.org"]):
+            score += 3
 
         # Penalise generic/educational content
         if any(w in text for w in ["how to invest", "guide", "what is eis", "tax relief explained"]):
