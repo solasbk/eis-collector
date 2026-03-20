@@ -68,39 +68,11 @@ SEARCH_QUERIES = [
 ]
 
 # ── Extraction config ────────────────────────────────────────────
-BATCH_SIZE = 10  # search results per LLM call
+BATCH_SIZE = 10  # search results per LLM call (snippet mode)
+PAGE_FETCH_LIMIT = 30  # max pages to fetch full content from
+PAGE_MAX_CHARS = 8000  # max chars to send from each page
 
-BATCH_PROMPT = """You are an analyst identifying individual investors in UK EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme) qualifying companies.
 
-Below are {count} search results. For EACH result, extract any NAMED INDIVIDUALS who appear to have personally invested in a UK startup or early-stage company.
-
-{results_text}
-
-Rules:
-- Extract NAMED INDIVIDUALS (first and last name required) who are described as investing, backing, or funding a company
-- INCLUDE people who invested in UK startups/early-stage companies even if "EIS" or "SEIS" is not explicitly mentioned
-- INCLUDE angel investors, seed investors, individual backers mentioned by name
-- INCLUDE people listed as investors on crowdfunding platforms (Seedrs, Crowdcube, etc.)
-- EXCLUDE fund managers, VCs, or advisors who are only mentioned as managing funds (not making personal investments)
-- EXCLUDE company names without an associated individual's name
-- EXCLUDE generic mentions like "angel investors" without specific names
-
-Return a JSON object with:
-{{"investors": [
-  {{
-    "name": "Full Name",
-    "role": "Their professional role/title (or 'Angel Investor' if unknown)",
-    "company": "Their employer/firm (or 'Independent' if unknown)",
-    "eis_company": "The company they invested in",
-    "sector": "The invested company's sector (brief)",
-    "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
-    "source_url": "The URL of the search result where this investor was found",
-    "context_quote": "A brief quote showing the investment mention"
-  }}
-]}}
-
-If no qualifying individual investors are found in ANY of the results, return: {{"investors": []}}
-Return ONLY valid JSON, nothing else."""
 
 
 def get_scan_status():
@@ -231,14 +203,12 @@ def _search_duckduckgo(all_results, seen_urls):
 # ── Extraction ───────────────────────────────────────────────────
 
 def _extract_investors_from_results(results):
-    """Extract investor mentions using batched LLM calls.
-    Priority: Gemini (cheapest) > Anthropic (fallback).
-    """
+    """Extract investor mentions by fetching page content and analyzing with LLM."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if gemini_key:
-        _log("Using Gemini 2.0 Flash for extraction (paid tier).")
+        _log("Using Gemini 2.0 Flash for extraction.")
         provider = "gemini"
         api_key = gemini_key
     elif anthropic_key:
@@ -256,82 +226,180 @@ def _extract_investors_from_results(results):
     all_investors = []
     today = date.today().isoformat()
 
-    _log(f"Analyzing {len(results)} search results...")
+    # Step 1: Score and rank results — prioritise pages likely to contain investor names
+    scored = _score_results(results)
+    top_results = scored[:PAGE_FETCH_LIMIT]
+    _log(f"Scored {len(results)} results. Fetching content from top {len(top_results)} pages.")
 
-    batches = [results[i:i + BATCH_SIZE] for i in range(0, len(results), BATCH_SIZE)]
-    _log(f"Processing in {len(batches)} batches of up to {BATCH_SIZE}")
-
+    # Step 2: Fetch actual page content for top results
     consecutive_errors = 0
+    pages_fetched = 0
 
-    for batch_idx, batch in enumerate(batches):
+    for i, result in enumerate(top_results):
         _update_state(
             phase="extracting",
-            phase_detail=f"Analyzing batch {batch_idx + 1}/{len(batches)} ({batch_idx * BATCH_SIZE + 1}-{min((batch_idx + 1) * BATCH_SIZE, len(results))} of {len(results)})..."
+            phase_detail=f"Fetching & analyzing page {i + 1}/{len(top_results)}: {result['title'][:50]}..."
         )
 
         try:
-            investor_data = _extract_batch(provider, api_key, batch)
-            consecutive_errors = 0  # reset on success
+            # Fetch page content
+            page_text = _fetch_page_text(result["url"])
+            if not page_text or len(page_text.strip()) < 100:
+                _log(f"Page {i+1}: too little content from {result['url'][:60]}")
+                continue
+
+            pages_fetched += 1
+            _log(f"Page {i+1}: fetched {len(page_text)} chars from {result['url'][:60]}")
+
+            # Extract investors from page content
+            investor_data = _extract_from_page(provider, api_key, result, page_text)
+            consecutive_errors = 0
+
             if investor_data:
-                _log(f"Batch {batch_idx + 1}: found {len(investor_data)} investor(s)")
-            else:
-                _log(f"Batch {batch_idx + 1}: no investors found")
-            for inv in investor_data:
-                inv.setdefault("source_url", "")
-                inv["source_type"] = _classify_source(inv.get("source_url", ""))
-                inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
-                inv["date_found"] = today
-                inv["linkedin_url"] = None
-                all_investors.append(inv)
+                _log(f"Page {i+1}: found {len(investor_data)} investor(s)")
+                for inv in investor_data:
+                    inv.setdefault("source_url", result["url"])
+                    inv["source_type"] = _classify_source(result["url"])
+                    inv["source_name"] = _extract_source_name(result["url"], result["title"])
+                    inv["date_found"] = today
+                    inv["linkedin_url"] = None
+                    all_investors.append(inv)
+
         except Exception as e:
             consecutive_errors += 1
             err_str = str(e)
-            _log(f"Batch {batch_idx + 1} error: {err_str[:150]}")
+            _log(f"Page {i+1} error: {err_str[:150]}")
 
-            # If rate limited, back off and retry
             if "429" in err_str:
                 wait = min(30 * consecutive_errors, 120)
-                _log(f"Rate limited. Waiting {wait}s before retry...")
+                _log(f"Rate limited. Waiting {wait}s...")
                 time.sleep(wait)
-                try:
-                    investor_data = _extract_batch(provider, api_key, batch)
-                    consecutive_errors = 0
-                    if investor_data:
-                        _log(f"Batch {batch_idx + 1} retry: found {len(investor_data)} investor(s)")
-                    for inv in investor_data:
-                        inv.setdefault("source_url", "")
-                        inv["source_type"] = _classify_source(inv.get("source_url", ""))
-                        inv["source_name"] = _extract_source_name(inv.get("source_url", ""), "")
-                        inv["date_found"] = today
-                        inv["linkedin_url"] = None
-                        all_investors.append(inv)
-                except Exception as e2:
-                    _log(f"Batch {batch_idx + 1} retry failed: {str(e2)[:150]}")
-                    consecutive_errors += 1
 
-            # Abort after too many consecutive failures
             if consecutive_errors >= 5:
-                _log(f"Aborting extraction after {consecutive_errors} consecutive errors.")
+                _log(f"Aborting after {consecutive_errors} consecutive errors.")
                 break
 
-        # Small delay between batches to be polite
-        if batch_idx < len(batches) - 1:
-            time.sleep(1.0)
+        time.sleep(0.5)
 
+    _log(f"Fetched {pages_fetched} pages. Found {len(all_investors)} total investor mentions.")
     return all_investors
 
 
-def _build_batch_prompt(batch):
-    """Build the prompt text for a batch of search results."""
-    results_text = ""
-    for i, r in enumerate(batch, 1):
-        results_text += f"\n--- Result {i} ---\nTitle: {r['title']}\nURL: {r['url']}\nSnippet: {r['snippet']}\n"
-    return BATCH_PROMPT.format(count=len(batch), results_text=results_text)
+def _score_results(results):
+    """Score search results by likelihood of containing named individual investors."""
+    scored = []
+    for r in results:
+        score = 0
+        text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
+
+        # High-value signals
+        if any(w in text for w in ["angel investor", "angel round", "seed round", "backed by", "invested in"]):
+            score += 3
+        if any(w in text for w in ["eis", "seis", "enterprise investment scheme"]):
+            score += 3
+        if any(w in text for w in ["announced", "raises", "funding round", "secures"]):
+            score += 2
+        if any(w in text for w in ["individual", "personally invested", "angel network"]):
+            score += 2
+
+        # Source quality signals
+        url = r.get("url", "").lower()
+        if any(d in url for d in ["techcrunch", "sifted", "uktech.news", "cityam", "growthbusiness"]):
+            score += 2
+        if any(d in url for d in ["seedrs.com", "crowdcube.com", "beauhurst.com"]):
+            score += 2
+        if any(d in url for d in ["linkedin.com", "companieshouse"]):
+            score += 1
+
+        # Penalise generic/educational content
+        if any(w in text for w in ["how to invest", "guide", "what is eis", "tax relief explained"]):
+            score -= 3
+        if any(w in text for w in ["compare eis funds", "eis fund manager", "wealth club"]):
+            score -= 2
+
+        r["_score"] = score
+        scored.append(r)
+
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    return scored
 
 
-def _extract_batch(provider, api_key, batch):
-    """Extract investors from a batch using the specified provider."""
-    prompt = _build_batch_prompt(batch)
+def _fetch_page_text(url):
+    """Fetch a page and extract readable text content."""
+    try:
+        resp = httpx.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=15,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Remove script and style elements
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+            tag.decompose()
+
+        text = soup.get_text(separator="\n", strip=True)
+
+        # Truncate to limit
+        if len(text) > PAGE_MAX_CHARS:
+            text = text[:PAGE_MAX_CHARS]
+
+        return text
+    except Exception:
+        return None
+
+
+PAGE_EXTRACTION_PROMPT = """You are an analyst extracting individual investors in UK startups, particularly those using the EIS (Enterprise Investment Scheme) or SEIS (Seed Enterprise Investment Scheme).
+
+Analyze this web page content and extract every NAMED INDIVIDUAL mentioned as having personally invested in, backed, or funded a UK startup or early-stage company.
+
+Page title: {title}
+Page URL: {url}
+
+Page content:
+{page_text}
+
+Rules:
+- Extract NAMED INDIVIDUALS (first and last name) described as investing, backing, or funding a company
+- INCLUDE angel investors, seed investors, individual backers, crowdfunding investors mentioned by name
+- INCLUDE people who invested in UK startups even if "EIS" is not explicitly mentioned
+- EXCLUDE fund managers or VCs only mentioned as managing a fund (unless they also made a personal investment)
+- EXCLUDE company names without an associated individual name
+- EXCLUDE generic mentions like "investors" without specific names
+- Extract as many qualifying individuals as you can find on the page
+
+Return a JSON object:
+{{"investors": [
+  {{
+    "name": "Full Name",
+    "role": "Their role/title (or 'Angel Investor' if unknown)",
+    "company": "Their employer/firm (or 'Independent' if unknown)",
+    "eis_company": "The company they invested in",
+    "sector": "The invested company's sector (brief)",
+    "amount": "Investment amount if disclosed, otherwise 'Undisclosed'",
+    "context_quote": "Brief quote from the page showing the investment"
+  }}
+]}}
+
+If no qualifying investors found, return: {{"investors": []}}
+Return ONLY valid JSON."""
+
+
+def _extract_from_page(provider, api_key, result, page_text):
+    """Extract investors from a full page's text content."""
+    prompt = PAGE_EXTRACTION_PROMPT.format(
+        title=result["title"],
+        url=result["url"],
+        page_text=page_text,
+    )
 
     if provider == "gemini":
         return _call_gemini(api_key, prompt)
