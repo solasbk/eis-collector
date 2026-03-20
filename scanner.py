@@ -204,24 +204,27 @@ def _search_duckduckgo(all_results, seen_urls):
 
 def _extract_investors_from_results(results):
     """Extract investor mentions by fetching page content and analyzing with LLM."""
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
+    # Build ordered list of providers to try (Anthropic primary — confirmed working)
+    providers = []
+    if anthropic_key:
+        providers.append(("anthropic", anthropic_key))
     if gemini_key:
-        _log("Using Gemini 2.0 Flash for extraction.")
-        provider = "gemini"
-        api_key = gemini_key
-    elif anthropic_key:
-        _log("Using Anthropic Claude Haiku for extraction.")
-        provider = "anthropic"
-        api_key = anthropic_key
-    else:
-        _log("No LLM API key set. Set GEMINI_API_KEY or ANTHROPIC_API_KEY in Render Environment.")
+        providers.append(("gemini", gemini_key))
+
+    if not providers:
+        _log("No LLM API key set. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in Render Environment.")
         _update_state(
             phase="done",
             phase_detail=f"Found {len(results)} search results but no LLM API key configured.",
         )
         return []
+
+    primary_name, _ = providers[0]
+    fallback_name = providers[1][0] if len(providers) > 1 else None
+    _log(f"Primary LLM: {primary_name}" + (f", fallback: {fallback_name}" if fallback_name else ""))
 
     all_investors = []
     today = date.today().isoformat()
@@ -251,30 +254,47 @@ def _extract_investors_from_results(results):
             pages_fetched += 1
             _log(f"Page {i+1}: fetched {len(page_text)} chars from {result['url'][:60]}")
 
-            # Extract investors from page content
-            investor_data = _extract_from_page(provider, api_key, result, page_text)
-            consecutive_errors = 0
+            # Try each provider in order until one succeeds
+            investor_data = None
+            for prov_name, prov_key in providers:
+                try:
+                    investor_data = _extract_from_page(prov_name, prov_key, result, page_text)
+                    consecutive_errors = 0
+                    break  # success — stop trying providers
+                except Exception as llm_err:
+                    err_str = str(llm_err)
+                    _log(f"Page {i+1} {prov_name} failed: {err_str[:120]}")
+                    if "429" in err_str:
+                        wait = min(20 * (consecutive_errors + 1), 60)
+                        _log(f"{prov_name} rate limited. Waiting {wait}s before trying next provider...")
+                        time.sleep(wait)
+                    # Continue to next provider
 
-            if investor_data:
-                _log(f"Page {i+1}: found {len(investor_data)} investor(s)")
-                for inv in investor_data:
-                    inv.setdefault("source_url", result["url"])
-                    inv["source_type"] = _classify_source(result["url"])
-                    inv["source_name"] = _extract_source_name(result["url"], result["title"])
-                    inv["date_found"] = today
-                    inv["linkedin_url"] = None
-                    all_investors.append(inv)
+            if investor_data is None:
+                # All providers failed for this page
+                consecutive_errors += 1
+                _log(f"Page {i+1}: all providers failed ({consecutive_errors} consecutive)")
+                if consecutive_errors >= 5:
+                    _log(f"Aborting after {consecutive_errors} consecutive all-provider failures.")
+                    break
+            else:
+                consecutive_errors = 0
+                if investor_data:
+                    _log(f"Page {i+1}: found {len(investor_data)} investor(s)")
+                    for inv in investor_data:
+                        inv.setdefault("source_url", result["url"])
+                        inv["source_type"] = _classify_source(result["url"])
+                        inv["source_name"] = _extract_source_name(result["url"], result["title"])
+                        inv["date_found"] = today
+                        inv["linkedin_url"] = None
+                        all_investors.append(inv)
+                else:
+                    _log(f"Page {i+1}: no investors found on this page")
 
         except Exception as e:
             consecutive_errors += 1
             err_str = str(e)
-            _log(f"Page {i+1} error: {err_str[:150]}")
-
-            if "429" in err_str:
-                wait = min(30 * consecutive_errors, 120)
-                _log(f"Rate limited. Waiting {wait}s...")
-                time.sleep(wait)
-
+            _log(f"Page {i+1} fetch error: {err_str[:150]}")
             if consecutive_errors >= 5:
                 _log(f"Aborting after {consecutive_errors} consecutive errors.")
                 break
