@@ -38,6 +38,9 @@ const exportNewBtn = document.getElementById("export-new-btn");
 const exportNewBadge = document.getElementById("export-new-badge");
 const runCollectionBtn = document.getElementById("run-collection-btn");
 const toast = document.getElementById("toast");
+const scanStatusBar = document.getElementById("scan-status-bar");
+const scanStatusDot = document.getElementById("scan-status-dot");
+const scanStatusText = document.getElementById("scan-status-text");
 
 /* ─── Theme Toggle ─── */
 (function initTheme() {
@@ -518,6 +521,7 @@ async function runCollection() {
 
     if (data.status === "started") {
       showToast("Scan started. Searching for EIS investors...", 5000);
+      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting web search..." });
       startScanPolling();
     } else {
       showToast(data.message || "Failed to start scan.");
@@ -595,6 +599,38 @@ function updateScanProgress(status) {
     btnSpan.textContent = "Analyzing...";
   } else if (status.phase === "saving") {
     btnSpan.textContent = "Saving...";
+  }
+
+  // Update the status bar
+  updateStatusBar(status);
+}
+
+function updateStatusBar(status) {
+  if (!scanStatusBar) return;
+
+  // Remove all state classes
+  scanStatusBar.classList.remove("active", "error", "success");
+
+  if (status.running) {
+    scanStatusBar.classList.add("active");
+    scanStatusText.textContent = status.phase_detail || "Scan in progress...";
+  } else if (status.phase === "done") {
+    scanStatusBar.classList.add("success");
+    scanStatusText.textContent = status.phase_detail || "Scan complete.";
+    // Fade back to idle after 30 seconds
+    setTimeout(function() {
+      scanStatusBar.classList.remove("success");
+      scanStatusText.textContent = "Ready";
+    }, 30000);
+  } else if (status.phase === "error") {
+    scanStatusBar.classList.add("error");
+    scanStatusText.textContent = "Error: " + (status.phase_detail || status.error || "Unknown error");
+    setTimeout(function() {
+      scanStatusBar.classList.remove("error");
+      scanStatusText.textContent = "Ready";
+    }, 30000);
+  } else {
+    scanStatusText.textContent = "Ready";
   }
 }
 
@@ -729,3 +765,17 @@ document.head.appendChild(animStyle);
 fetchStats();
 fetchInvestors();
 updateExportNewBadge();
+
+// Check if a scan is already running on page load
+(async function checkRunningStatus() {
+  try {
+    var res = await fetch(API + "/api/scan/status");
+    var status = await res.json();
+    if (status.running) {
+      setScanButtonState("scanning");
+      runCollectionBtn.disabled = true;
+      updateStatusBar(status);
+      startScanPolling();
+    }
+  } catch (e) {}
+})();
