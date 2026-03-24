@@ -43,85 +43,138 @@ SEARCH_QUERIES = [
     '"SEIS funding" OR "EIS funding" angel investor name UK startup',
     'EIS tax relief investor personal investment UK company',
     '"EIS relief" investor portfolio company invested UK',
+    '"EIS3" OR "EIS1" compliance statement investor shares UK',
+    '"advance assurance" EIS SEIS investor company funded UK',
 
     # ── Angel investment & seed rounds (UK focus) ─────────────────
     'UK angel investor seed round funded startup 2025 OR 2026',
     'UK angel investor seed round funded startup 2023 OR 2024',
     'UK angel investor seed round funded startup 2021 OR 2022',
+    'UK angel investor seed round funded startup 2019 OR 2020',
     'UK angel investment announcement individual investor backed',
     'angel investor UK "led the round" OR "participated in" seed pre-seed',
     'UK startup seed funding announcement investor names',
     'UK early stage investor "angel round" OR "seed round" funded',
     '"angel investor" UK backed startup Series A individual',
     'UK startup "pre-seed" OR "seed" funding round individual investors named',
+    'UK startup raises seed angel investor names announcement',
+    'UK seed round funded individual angels participated',
 
-    # ── EIS fund managers, networks, and syndicates ───────────────
-    'Mercia OR Deepbridge OR Maven OR "Octopus Ventures" EIS investment individual investor',
+    # ── Named angel networks and syndicates (UK-wide) ────────────
+    'Cambridge Angels OR London Business Angels OR Archangels investor portfolio',
+    'OION OR "Oxford Angel Network" investor funded startup',
+    '24Haymarket OR Envestors OR "Equity Gap" investor funded',
+    'Kelvin Capital OR TRICAPITAL OR "Wealth Club" angel investor funded',
+    'Galvanise OR Newable OR "Wild Blue Cohort" angel investor UK',
+    'GC Angels OR "Minerva Business Angel" OR "Anglia Capital" investor',
+    '"Bristol Private Equity Club" OR "Dorset Business Angels" investor',
+    '"Northwest Business Angels" OR "FSE Group" angel investor funded',
+    'SFC Capital OR Haatch OR "Angel CoFund" investor UK startup',
+    'Mercia OR Deepbridge OR Maven OR "Octopus Ventures" EIS individual investor',
     'UK angel network deal completed investor names',
     '"angel syndicate" UK investor invested startup EIS SEIS',
     '"angel investing" UK member portfolio companies invested',
     'UK "angel group" OR "angel network" members investors deals',
-    'Cambridge Angels OR London Business Angels OR Archangels investor portfolio',
     'Midlands Engine OR Northern Powerhouse angel investor EIS backed',
-    '"angel CoFund" OR "angel co-investment" UK individual investors',
+    '"angel co-investment" UK individual investors fund',
 
     # ── Crowdfunding platforms (named investors) ──────────────────
     'site:seedrs.com investor funded EIS campaign',
     'site:crowdcube.com investor backed raised EIS',
     'site:syndicateroom.com investor funded EIS portfolio',
+    'site:republic.com angel investor UK startup funded',
     'crowdfunding UK "lead investor" OR "angel investor" name funded',
+    'UK crowdfunding campaign funded lead investor named',
 
-    # ── VCTs and EIS funds (name individual directors/investors) ──
+    # ── VCTs and EIS funds (individual directors/investors) ──────
     'VCT investor director UK "venture capital trust" individual',
     '"EIS fund" investor portfolio UK individual name invested',
     'Baronsmead OR Mobeus OR ProVen OR Albion VCT investor director',
     'Puma Investments OR Calculus Capital OR Triple Point EIS individual investor',
+    'Oxford Capital OR Deepbridge OR YFM Equity EIS investor',
+    '"Par Equity" OR "Foresight Group" EIS investor individual UK',
+    'Guinness Asset Management OR "Seneca Partners" EIS investor UK',
 
     # ── Companies House and regulatory filings ────────────────────
     '"allotment of shares" EIS investor UK',
     'UK startup "share allotment" individual investor SEIS EIS',
     'site:find-and-update.company-information.service.gov.uk "allotment" shares investor',
+    '"persons with significant control" UK startup angel investor',
+    'UK startup confirmation statement shareholder angel investor',
 
-    # ── Industry press and directories ────────────────────────────
-    'site:uktech.news OR site:sifted.eu investor angel funded UK startup',
+    # ── UK startup funding press (articles naming investors) ──────
+    'site:uktech.news investor angel funded UK startup',
+    'site:sifted.eu angel investor funded UK startup seed',
     'site:beauhurst.com angel investor UK EIS portfolio',
     'site:growthbusiness.co.uk angel investor UK startup funded',
     'site:techcrunch.com UK angel investor seed funded startup',
     'site:cityam.com angel investor UK startup funded backed',
     'site:altfi.com investor EIS SEIS funded UK fintech',
-    '"angel investor" UK profile invested EIS qualifying companies portfolio',
     'site:eu-startups.com UK angel investor funded startup seed',
+    'site:startupmag.co.uk angel investor funded UK startup seed',
+    'site:startupmag.co.uk most active UK investors angels',
+    'site:techfundingnews.com UK angel investor startup funded',
+    'site:businesscloud.co.uk angel investor funded UK startup',
+    'site:startups.co.uk angel investor EIS funded round',
+    'site:verdict.co.uk OR site:tech.eu UK startup angel investor funded',
+    'site:prolificnorth.co.uk OR site:bdaily.co.uk angel investor funded startup',
+    'site:uktn.co.uk OR site:maddyness.com angel investor UK seed funded',
+
+    # ── Investor directories and databases ───────────────────────
+    'site:openvc.app angel investor UK startup',
+    'site:seedlegals.com investor directory angel UK',
+    'site:angellist.com UK angel investor startup funded',
+    'site:crunchbase.com UK angel investor seed funded individual',
+    'site:pitchbook.com UK angel investor EIS seed funded',
+    'site:dealroom.co UK angel investor funded startup seed',
+    'site:robotmascot.co.uk angel investor network UK directory',
+    'site:republic.com UK angel investor funded startup',
 
     # ── LinkedIn and social profiles ──────────────────────────────
     'site:linkedin.com "EIS" OR "SEIS" "angel investor" UK invested',
     'site:linkedin.com "angel investor" UK "invested in" startup portfolio',
+    'site:linkedin.com "angel investor" UK "portfolio" company funded EIS',
+    'site:twitter.com OR site:x.com UK angel investor invested startup',
 
     # ── Historical and broader date ranges ────────────────────────
     '"EIS investor" UK angel invested startup 2020 OR 2021',
     '"angel investor" UK startup seed round funded 2022 OR 2023',
     'UK angel investment round announcement names 2020 2021 2022',
     'UK "EIS" investment individual investor announcement 2019 OR 2020',
+    'UK angel investor portfolio companies funded 2017 OR 2018',
 
     # ── Awards, lists, and directories of angel investors ─────────
     'UK "angel investor of the year" OR "angel investor award" names',
     '"top angel investors" UK list names EIS SEIS',
     '"most active angel investors" UK 2024 OR 2025 OR 2026',
+    '"most active angel investors" UK 2022 OR 2023',
     'UK angel investor directory list names profiles',
     'UKBAA OR "UK Business Angels Association" investor members',
+    'EISA OR "EIS Association" investor members UK',
 
-    # ── Specific high-value sources ───────────────────────────────
-    'site:pitchbook.com UK angel investor EIS seed funded',
-    'site:crunchbase.com UK angel investor seed funded individual',
-    'site:dealroom.co UK angel investor funded startup seed',
-    'site:businesscloud.co.uk angel investor funded UK startup',
-    'site:startups.co.uk angel investor EIS funded round',
+    # ── Sector-specific angel investor queries ────────────────────
+    'UK angel investor healthtech biotech life sciences funded',
+    'UK angel investor fintech insurtech funded seed',
+    'UK angel investor cleantech greentech climate funded',
+    'UK angel investor AI machine learning deeptech funded',
+    'UK angel investor proptech edtech foodtech funded seed',
+    'UK angel investor SaaS software B2B funded startup',
+
+    # ── Regional UK startup ecosystems ────────────────────────────
+    'London angel investor seed funded startup names 2025 2026',
+    'Manchester angel investor seed funded startup names',
+    'Edinburgh OR Glasgow angel investor startup funded Scotland',
+    'Cambridge OR Oxford angel investor startup funded seed',
+    'Bristol OR Birmingham angel investor startup funded seed',
+    'Leeds OR Sheffield OR Newcastle angel investor funded startup',
+    'Northern Ireland OR Wales angel investor funded startup seed',
 ]
 
 # ── Direct source URLs to browse for investor names ──────────────
 # These are known pages that list investors, portfolios, or deals.
 # The scanner fetches these directly (no search needed) and extracts names.
 DIRECT_SOURCES = [
-    # Angel networks — member/portfolio pages
+    # ── Angel networks — member/portfolio pages ───────────────────
     "https://www.angelsden.com/investors",
     "https://www.cambridgeangels.com/members",
     "https://www.londonbusinessangels.co.uk/our-angels",
@@ -129,31 +182,71 @@ DIRECT_SOURCES = [
     "https://www.gabrieltechnology.com/team",
     "https://www.midlandsengine.org/investment-fund/",
     "https://www.syndicateroom.com/investors",
-    # Crowdfunding — recent funded campaigns (investor lists)
+    "https://www.envestors.co.uk/investors",
+    "https://www.24haymarket.com/team",
+    "https://www.equitygap.co.uk/team",
+    "https://www.kelvincapital.com/team",
+    "https://www.gcangels.co.uk/investors",
+    "https://www.minerva.uk.net/angels",
+    "https://www.angliacapitalgroup.co.uk/investors",
+    "https://www.dorsetbusinessangels.co.uk/members",
+    "https://www.nwbusinessangels.co.uk/angels",
+    "https://www.bristolprivateequityclub.com/members",
+    "https://www.galvanise.com/team",
+    "https://www.newable.co.uk/angel-investors/",
+    # ── Scottish angel networks ───────────────────────────────
+    "https://www.tricapital.co.uk/team",
+    "https://www.lbangels.co.uk/our-angels",
+    "https://www.scottishenterprise.com/support-for-businesses/funding-and-grants/co-investment-funds",
+    # ── Crowdfunding — recent funded campaigns ────────────────────
     "https://www.seedrs.com/invest/campaigns?status=funded",
     "https://www.crowdcube.com/explore/funded",
-    # EIS/VCT fund managers — team and investor pages
+    "https://europe.republic.com/invest",
+    # ── EIS/VCT fund managers — team and investor pages ───────────
     "https://www.oxfordcapital.co.uk/team/",
     "https://www.parequity.com/team/",
     "https://www.calculus.co.uk/about-us/team/",
     "https://www.pumainvestments.co.uk/about-us/team/",
     "https://www.triplepoint.co.uk/our-team/",
-    # Beauhurst angel investor listings
+    "https://www.deepbridgecapital.com/team",
+    "https://www.guinnessgi.com/team",
+    "https://www.senecapartners.co.uk/team",
+    "https://www.yfmequity.co.uk/team",
+    "https://www.foresightgroup.eu/about-us/our-team",
+    "https://www.albion.capital/about/our-team",
+    "https://www.mercia.co.uk/team",
+    "https://www.sfccapital.com/portfolio",
+    "https://www.haatch.com/portfolio",
+    # ── Investor directories and lists ───────────────────────────
     "https://www.beauhurst.com/research/angel-investors-uk/",
     "https://www.beauhurst.com/research/top-angel-investors/",
-    # Tech press — investor roundups
+    "https://www.beauhurst.com/blog/top-angel-networks-uk/",
+    "https://www.openvc.app/investor-lists/angel-investors-uk",
+    "https://www.openvc.app/investor-lists/angel-investors-london",
+    "https://seedlegals.com/resources/category/investor-directory/",
+    "https://www.startupmag.co.uk/investors/angel-investors/",
+    "https://www.startupmag.co.uk/market/startup-investors/",
+    "https://www.robotmascot.co.uk/blog/uk-angel-investment-groups-directory/",
+    "https://europe.republic.com/academy/top-22-uk-active-angel-investor-networks",
+    # ── Funding news roundups (name investors in articles) ─────────
+    "https://www.startupmag.co.uk/funding/",
     "https://www.uktech.news/tag/angel-investor",
     "https://sifted.eu/sector/angel-investment",
     "https://www.growthbusiness.co.uk/tag/angel-investment",
-    # UKBAA member directories
-    "https://www.ukbaa.org.uk/member-directory/",
-    # Startups.co.uk investor pages
+    "https://techfundingnews.com/category/uk/",
+    "https://startups.co.uk/news/",
     "https://startups.co.uk/funding/angel-investors/",
+    # ── Industry associations ─────────────────────────────────
+    "https://www.ukbaa.org.uk/member-directory/",
+    "https://ukbaa.org.uk/membership/angel-hubs/",
+    "https://www.eisa.org.uk/about-eis/facts-and-figures/",
+    # ── SeedLegals sector-specific investor pages ─────────────────
+    "https://seedlegals.com/resources/category/investor-directory/page/2/",
 ]
 
 # ── Extraction config ────────────────────────────────────────────
 BATCH_SIZE = 10  # search results per LLM call (snippet mode)
-PAGE_FETCH_LIMIT = 80  # max pages to fetch full content from
+PAGE_FETCH_LIMIT = 120  # max pages to fetch full content from
 PAGE_MAX_CHARS = 8000  # max chars to send from each page
 
 
@@ -432,12 +525,20 @@ def _score_results(results):
             score += 2
         if any(d in url for d in ["seedrs.com", "crowdcube.com", "beauhurst.com", "syndicateroom.com"]):
             score += 3
-        if any(d in url for d in ["crunchbase.com", "pitchbook.com", "dealroom.co"]):
+        if any(d in url for d in ["crunchbase.com", "pitchbook.com", "dealroom.co", "openvc.app"]):
             score += 2
         if any(d in url for d in ["linkedin.com", "companieshouse", "company-information.service.gov.uk"]):
             score += 1
         if any(d in url for d in ["angelsden.com", "cambridgeangels", "londonbusinessangels", "ukbaa.org"]):
             score += 3
+        if any(d in url for d in ["startupmag.co.uk", "techfundingnews.com", "seedlegals.com", "republic.com"]):
+            score += 2
+        if any(d in url for d in ["envestors.co", "equitygap.co", "kelvincapital", "24haymarket", "galvanise.com"]):
+            score += 3
+        if any(d in url for d in ["sfccapital.com", "haatch.com", "parequity.com", "robotmascot.co.uk"]):
+            score += 2
+        if any(d in url for d in ["eisa.org.uk", "mercia.co", "deepbridge", "foresightgroup", "albion.capital"]):
+            score += 2
 
         # Penalise generic/educational content
         if any(w in text for w in ["how to invest", "guide", "what is eis", "tax relief explained"]):
