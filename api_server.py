@@ -67,12 +67,50 @@ def init_db(db):
     db.commit()
 
 
+def backup_db(db):
+    """Save a JSON backup of all investors to the persistent data directory."""
+    try:
+        rows = db.execute("SELECT * FROM investors ORDER BY id").fetchall()
+        investors = [dict(r) for r in rows]
+        if not investors:
+            return
+        backup_path = os.path.join(DATA_DIR, "investors_backup.json")
+        with open(backup_path, "w") as f:
+            json.dump(investors, f, indent=2, default=str)
+        print(f"[backup] Saved {len(investors)} investors to {backup_path}")
+    except Exception as e:
+        print(f"[backup] Failed: {e}")
+
+
 def seed_db(db):
     count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
     if count > 0:
         return
 
-    # Load seed data from JSON file
+    # Priority 1: Restore from backup on persistent disk (survives redeploys)
+    backup_path = os.path.join(DATA_DIR, "investors_backup.json")
+    if os.path.exists(backup_path):
+        try:
+            with open(backup_path) as f:
+                backup_data = json.load(f)
+            if backup_data:
+                for inv in backup_data:
+                    db.execute("""
+                        INSERT INTO investors (name, role, company, eis_company, sector, amount,
+                        source_url, source_type, source_name, context_quote, linkedin_url, date_found)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        inv.get("name"), inv.get("role"), inv.get("company"), inv.get("eis_company"),
+                        inv.get("sector"), inv.get("amount"), inv.get("source_url"), inv.get("source_type"),
+                        inv.get("source_name"), inv.get("context_quote"), inv.get("linkedin_url"), inv.get("date_found")
+                    ))
+                db.commit()
+                print(f"[seed] Restored {len(backup_data)} investors from backup")
+                return
+        except Exception as e:
+            print(f"[seed] Backup restore failed: {e}")
+
+    # Priority 2: Load seed data from JSON file bundled with the app
     seed_file = Path(__file__).parent / "seed_data.json"
     if seed_file.exists():
         with open(seed_file) as f:
@@ -88,6 +126,7 @@ def seed_db(db):
                 inv.get("source_name"), inv.get("context_quote"), inv.get("linkedin_url"), inv.get("date_found")
             ))
         db.commit()
+        print(f"[seed] Loaded {len(seed_data)} investors from seed_data.json")
         return
 
     # Fallback: minimal sample data

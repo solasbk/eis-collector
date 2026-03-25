@@ -838,6 +838,15 @@ def run_scan():
             inserted, duplicated = _save_to_db(investors)
             _log(f"Saved: {inserted} new, {duplicated} duplicates")
 
+            # Backup database to JSON after successful save
+            if inserted > 0:
+                try:
+                    from api_server import backup_db, get_db
+                    backup_db(get_db())
+                    _log("Database backup saved to persistent disk")
+                except Exception as bk_err:
+                    _log(f"Backup warning: {bk_err}")
+
             last_results = [
                 {"name": inv.get("name"), "eis_company": inv.get("eis_company")}
                 for inv in investors
