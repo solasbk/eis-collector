@@ -37,6 +37,7 @@ const exportExcelBtn = document.getElementById("export-excel-btn");
 const exportNewBtn = document.getElementById("export-new-btn");
 const exportNewBadge = document.getElementById("export-new-badge");
 const runCollectionBtn = document.getElementById("run-collection-btn");
+const runChBtn = document.getElementById("run-ch-btn");
 const toast = document.getElementById("toast");
 const scanStatusBar = document.getElementById("scan-status-bar");
 const scanStatusDot = document.getElementById("scan-status-dot");
@@ -748,6 +749,7 @@ exportBtn.addEventListener("click", exportCSV);
 exportExcelBtn.addEventListener("click", exportExcel);
 exportNewBtn.addEventListener("click", exportNew);
 runCollectionBtn.addEventListener("click", runCollection);
+if (runChBtn) runChBtn.addEventListener("click", runChScan);
 
 // Close detail on Escape
 document.addEventListener("keydown", function (e) {
@@ -766,7 +768,85 @@ fetchStats();
 fetchInvestors();
 updateExportNewBadge();
 
-// Check if a scan is already running on page load
+/* ─── Companies House Scan ─── */
+let chPollingInterval = null;
+
+async function runChScan() {
+  try {
+    runChBtn.disabled = true;
+    var btnSpan = runChBtn.querySelector("span");
+    var btnSvg = runChBtn.querySelector("svg");
+    if (btnSpan) btnSpan.textContent = "Scanning...";
+    if (btnSvg) btnSvg.style.animation = "spin 1s linear infinite";
+
+    var res = await fetch(API + "/api/ch-scan", { method: "POST" });
+    var data = await res.json();
+
+    if (data.status === "already_running") {
+      showToast("Companies House scan already running.");
+      startChPolling();
+      return;
+    }
+
+    if (data.status === "started") {
+      showToast("Companies House scan started...", 5000);
+      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting Companies House scan..." });
+      startChPolling();
+    } else {
+      showToast(data.message || "Failed to start CH scan.");
+      resetChButton();
+    }
+  } catch (err) {
+    console.error("CH scan failed:", err);
+    showToast("Failed to start Companies House scan.");
+    resetChButton();
+  }
+}
+
+function startChPolling() {
+  if (chPollingInterval) clearInterval(chPollingInterval);
+  chPollingInterval = setInterval(pollChStatus, 2000);
+}
+
+async function pollChStatus() {
+  try {
+    var res = await fetch(API + "/api/ch-scan/status");
+    var status = await res.json();
+
+    // Update status bar
+    updateStatusBar(status);
+
+    if (!status.running) {
+      clearInterval(chPollingInterval);
+      chPollingInterval = null;
+      resetChButton();
+
+      if (status.phase === "done") {
+        showToast(status.phase_detail || "Companies House scan complete.", 8000);
+        showScanLog(status);
+        fetchStats();
+        fetchInvestors();
+        updateExportNewBadge();
+      } else if (status.phase === "error") {
+        showToast("CH scan error: " + (status.error || "Unknown error"), 5000);
+        showScanLog(status);
+      }
+    }
+  } catch (err) {
+    console.error("CH polling error:", err);
+  }
+}
+
+function resetChButton() {
+  if (!runChBtn) return;
+  runChBtn.disabled = false;
+  var btnSpan = runChBtn.querySelector("span");
+  var btnSvg = runChBtn.querySelector("svg");
+  if (btnSpan) btnSpan.textContent = "Companies House";
+  if (btnSvg) btnSvg.style.animation = "";
+}
+
+// Check if any scan is already running on page load
 (async function checkRunningStatus() {
   try {
     var res = await fetch(API + "/api/scan/status");
@@ -776,6 +856,21 @@ updateExportNewBadge();
       runCollectionBtn.disabled = true;
       updateStatusBar(status);
       startScanPolling();
+    }
+  } catch (e) {}
+  try {
+    var res2 = await fetch(API + "/api/ch-scan/status");
+    var chStatus = await res2.json();
+    if (chStatus.running) {
+      if (runChBtn) {
+        runChBtn.disabled = true;
+        var s = runChBtn.querySelector("span");
+        var v = runChBtn.querySelector("svg");
+        if (s) s.textContent = "Scanning...";
+        if (v) v.style.animation = "spin 1s linear infinite";
+      }
+      updateStatusBar(chStatus);
+      startChPolling();
     }
   } catch (e) {}
 })();

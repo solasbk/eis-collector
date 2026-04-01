@@ -532,6 +532,24 @@ def scan_status():
     return get_scan_status()
 
 
+@app.post("/api/ch-scan")
+def trigger_ch_scan():
+    from ch_scanner import run_ch_scan, get_ch_scan_status
+    status = get_ch_scan_status()
+    if status["running"]:
+        return {"status": "already_running", "message": "A Companies House scan is already in progress."}
+    started = run_ch_scan()
+    if started:
+        return {"status": "started", "message": "Companies House scan started. Poll /api/ch-scan/status for progress."}
+    return {"status": "error", "message": "Failed to start Companies House scan."}
+
+
+@app.get("/api/ch-scan/status")
+def ch_scan_status():
+    from ch_scanner import get_ch_scan_status
+    return get_ch_scan_status()
+
+
 # Keep legacy endpoint for backward compatibility
 @app.post("/api/collect")
 def trigger_collection():
