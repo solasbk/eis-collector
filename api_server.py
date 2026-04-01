@@ -411,7 +411,9 @@ def rows_to_list(rows):
 @app.get("/api/investors")
 def list_investors(
     search: Optional[str] = Query(None),
+    origin: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None),
+    source_name: Optional[str] = Query(None),
     sector: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
@@ -428,9 +430,18 @@ def list_investors(
         s = f"%{search}%"
         params.extend([s, s, s, s])
 
+    if origin == "ch":
+        conditions.append("source_name = 'Companies House'")
+    elif origin == "web":
+        conditions.append("(source_name IS NULL OR source_name != 'Companies House')")
+
     if source_type:
         conditions.append("source_type = ?")
         params.append(source_type)
+
+    if source_name:
+        conditions.append("source_name = ?")
+        params.append(source_name)
 
     if sector:
         conditions.append("sector = ?")
@@ -504,6 +515,13 @@ def get_stats():
     # Source types list
     source_types = [r["source_type"] for r in db.execute("SELECT DISTINCT source_type FROM investors ORDER BY source_type").fetchall()]
 
+    # Source names list (actual source: Companies House, Beauhurst, etc.)
+    source_names = [
+        r["source_name"] for r in db.execute(
+            "SELECT DISTINCT source_name FROM investors WHERE source_name IS NOT NULL AND source_name != '' ORDER BY source_name"
+        ).fetchall()
+    ]
+
     return {
         "total_investors": total,
         "new_this_week": new_this_week,
@@ -511,6 +529,7 @@ def get_stats():
         "sources_scanned": sources,
         "sectors": sectors,
         "source_types": source_types,
+        "source_names": source_names,
     }
 
 

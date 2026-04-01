@@ -97,8 +97,13 @@
         <input type="text" id="search-input" class="search-input" placeholder="Search name, company, or EIS company…" autocomplete="off">
       </div>
       <div class="filter-group">
-        <select id="filter-source" class="filter-select">
+        <select id="filter-origin" class="filter-select">
           <option value="">All Sources</option>
+          <option value="web">Web Scan</option>
+          <option value="ch">Companies House</option>
+        </select>
+        <select id="filter-source" class="filter-select">
+          <option value="">All Source Names</option>
         </select>
         <select id="filter-sector" class="filter-select">
           <option value="">All Sectors</option>

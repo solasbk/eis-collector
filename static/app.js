@@ -38,6 +38,7 @@ const exportNewBtn = document.getElementById("export-new-btn");
 const exportNewBadge = document.getElementById("export-new-badge");
 const runCollectionBtn = document.getElementById("run-collection-btn");
 const runChBtn = document.getElementById("run-ch-btn");
+const filterOrigin = document.getElementById("filter-origin");
 const toast = document.getElementById("toast");
 const scanStatusBar = document.getElementById("scan-status-bar");
 const scanStatusDot = document.getElementById("scan-status-dot");
@@ -94,6 +95,7 @@ async function fetchStats() {
     // Populate filter options
     sectors = data.sectors || [];
     sourceTypes = data.source_types || [];
+    sourceNames = data.source_names || [];
     populateFilters();
   } catch (err) {
     console.error("Failed to fetch stats:", err);
@@ -121,12 +123,12 @@ function animateNumber(id, target) {
 }
 
 function populateFilters() {
-  // Source types
+  // Source names (actual sources: Companies House, Beauhurst, etc.)
   filterSource.innerHTML = '<option value="">All Sources</option>';
-  sourceTypes.forEach(function (st) {
+  sourceNames.forEach(function (sn) {
     var opt = document.createElement("option");
-    opt.value = st;
-    opt.textContent = st;
+    opt.value = sn;
+    opt.textContent = sn;
     filterSource.appendChild(opt);
   });
 
@@ -153,8 +155,11 @@ async function fetchInvestors() {
   var search = searchInput.value.trim();
   if (search) { params.set("search", search); }
 
+  var origin = filterOrigin.value;
+  if (origin) { params.set("origin", origin); }
+
   var source = filterSource.value;
-  if (source) { params.set("source_type", source); }
+  if (source) { params.set("source_name", source); }
 
   var sector = filterSector.value;
   if (sector) { params.set("sector", sector); }
@@ -720,6 +725,11 @@ filterDateFrom.addEventListener("change", function () {
 });
 
 filterDateTo.addEventListener("change", function () {
+  currentPage = 1;
+  fetchInvestors();
+});
+
+filterOrigin.addEventListener("change", function () {
   currentPage = 1;
   fetchInvestors();
 });
