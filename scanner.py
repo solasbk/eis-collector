@@ -9,15 +9,11 @@ import json
 import os
 import threading
 import time
-import sqlite3
 import re
 from datetime import datetime, date
 from typing import Optional
 
 import httpx
-
-DATA_DIR = os.environ.get("DATA_DIR", ".")
-DB_PATH = os.path.join(DATA_DIR, "eis_investors.db")
 
 # ── Scan state (in-memory, single-instance) ──────────────────────
 _scan_lock = threading.Lock()
@@ -739,26 +735,27 @@ def _extract_source_name(url, title):
 
 def _save_to_db(investors):
     """Save extracted investors to the database, deduplicating by name + eis_company."""
-    db = sqlite3.connect(DB_PATH, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
 
     inserted = 0
     duplicated = 0
 
     for inv in investors:
-        existing = db.execute(
-            "SELECT id FROM investors WHERE name = ? AND eis_company = ?",
+        cur.execute(
+            "SELECT id FROM investors WHERE name = %s AND eis_company = %s",
             [inv.get("name", ""), inv.get("eis_company", "")]
-        ).fetchone()
+        )
+        existing = cur.fetchone()
 
         if existing:
             duplicated += 1
         else:
-            db.execute("""
+            cur.execute("""
                 INSERT INTO investors (name, role, company, eis_company, sector, amount,
                 source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 inv.get("name"), inv.get("role"), inv.get("company"),
                 inv.get("eis_company"), inv.get("sector"), inv.get("amount"),
@@ -768,6 +765,7 @@ def _save_to_db(investors):
             inserted += 1
 
     db.commit()
+    cur.close()
     db.close()
     return inserted, duplicated
 
@@ -837,15 +835,6 @@ def run_scan():
             )
             inserted, duplicated = _save_to_db(investors)
             _log(f"Saved: {inserted} new, {duplicated} duplicates")
-
-            # Backup database to JSON after successful save
-            if inserted > 0:
-                try:
-                    from api_server import backup_db, get_db
-                    backup_db(get_db())
-                    _log("Database backup saved to persistent disk")
-                except Exception as bk_err:
-                    _log(f"Backup warning: {bk_err}")
 
             last_results = [
                 {"name": inv.get("name"), "eis_company": inv.get("eis_company")}

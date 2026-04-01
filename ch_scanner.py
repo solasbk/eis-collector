@@ -7,16 +7,12 @@ individual shareholders/investors.
 
 import json
 import os
-import sqlite3
 import threading
 import time
 from datetime import datetime, date
 from typing import Optional
 
 import httpx
-
-DATA_DIR = os.environ.get("DATA_DIR", ".")
-DB_PATH = os.path.join(DATA_DIR, "eis_investors.db")
 
 CH_API_BASE = "https://api.company-information.service.gov.uk"
 
@@ -208,11 +204,14 @@ def _get_company_profile(api_key, company_number):
 def _get_eis_companies_from_db():
     """Pull unique EIS company names from the existing investor database."""
     try:
-        db = sqlite3.connect(DB_PATH, check_same_thread=False)
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
+        from api_server import get_db
+        db = get_db()
+        cur = db.cursor()
+        cur.execute(
             "SELECT DISTINCT eis_company FROM investors WHERE eis_company IS NOT NULL AND eis_company != ''"
-        ).fetchall()
+        )
+        rows = cur.fetchall()
+        cur.close()
         db.close()
         return [row["eis_company"] for row in rows]
     except Exception:
@@ -223,26 +222,27 @@ def _get_eis_companies_from_db():
 
 def _save_ch_investors(investors):
     """Save Companies House investors to database."""
-    db = sqlite3.connect(DB_PATH, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
 
     inserted = 0
     duplicated = 0
 
     for inv in investors:
-        existing = db.execute(
-            "SELECT id FROM investors WHERE name = ? AND eis_company = ?",
+        cur.execute(
+            "SELECT id FROM investors WHERE name = %s AND eis_company = %s",
             [inv.get("name", ""), inv.get("eis_company", "")]
-        ).fetchone()
+        )
+        existing = cur.fetchone()
 
         if existing:
             duplicated += 1
         else:
-            db.execute("""
+            cur.execute("""
                 INSERT INTO investors (name, role, company, eis_company, sector, amount,
                 source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 inv.get("name"), inv.get("role"), inv.get("company"),
                 inv.get("eis_company"), inv.get("sector"), inv.get("amount"),
@@ -252,6 +252,7 @@ def _save_ch_investors(investors):
             inserted += 1
 
     db.commit()
+    cur.close()
     db.close()
     return inserted, duplicated
 
@@ -405,15 +406,6 @@ def run_ch_scan():
             )
             inserted, duplicated = _save_ch_investors(all_investors)
             _ch_log(f"Saved: {inserted} new, {duplicated} duplicates")
-
-            # Backup database
-            if inserted > 0:
-                try:
-                    from api_server import backup_db, get_db
-                    backup_db(get_db())
-                    _ch_log("Database backup saved")
-                except Exception as bk_err:
-                    _ch_log(f"Backup warning: {bk_err}")
 
             _ch_update(
                 phase="done",

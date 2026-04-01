@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """api_server.py — EIS Investor Collector backend."""
 import os
-import sqlite3
 import json
 import math
 import io
@@ -9,6 +8,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Optional
+
+import psycopg2
+import psycopg2.extras
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
@@ -18,22 +20,26 @@ from pydantic import BaseModel
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 
-# Use /opt/render/project/data for persistent disk on Render, else local
-DATA_DIR = os.environ.get("DATA_DIR", ".")
-DB_PATH = os.path.join(DATA_DIR, "eis_investors.db")
-
 
 def get_db():
-    db = sqlite3.connect(DB_PATH, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    return db
+    database_url = os.environ.get("DATABASE_URL", "")
+    if database_url:
+        conn = psycopg2.connect(database_url, cursor_factory=psycopg2.extras.RealDictCursor)
+    else:
+        # Fallback: local SQLite-style is not available with psycopg2.
+        # Raise a clear error if DATABASE_URL is not set.
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Please configure a PostgreSQL database."
+        )
+    return conn
 
 
 def init_db(db):
-    db.executescript("""
+    cur = db.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS investors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             role TEXT,
             company TEXT,
@@ -46,371 +52,89 @@ def init_db(db):
             context_quote TEXT,
             linkedin_url TEXT,
             date_found TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS export_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            id SERIAL PRIMARY KEY,
+            exported_at TIMESTAMP DEFAULT NOW(),
             investor_count INTEGER DEFAULT 0,
             export_type TEXT DEFAULT 'full'
-        );
-        CREATE TABLE IF NOT EXISTS email_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            emailed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            investor_count INTEGER DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_name ON investors(name);
-        CREATE INDEX IF NOT EXISTS idx_date ON investors(date_found);
-        CREATE INDEX IF NOT EXISTS idx_sector ON investors(sector);
-        CREATE INDEX IF NOT EXISTS idx_created ON investors(created_at);
+        )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS email_log (
+            id SERIAL PRIMARY KEY,
+            emailed_at TIMESTAMP DEFAULT NOW(),
+            investor_count INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_name ON investors(name)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_date ON investors(date_found)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sector ON investors(sector)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_created ON investors(created_at)")
     db.commit()
-
-
-def backup_db(db):
-    """Save a JSON backup of all investors to the persistent data directory."""
-    try:
-        rows = db.execute("SELECT * FROM investors ORDER BY id").fetchall()
-        investors = [dict(r) for r in rows]
-        if not investors:
-            return
-        backup_path = os.path.join(DATA_DIR, "investors_backup.json")
-        with open(backup_path, "w") as f:
-            json.dump(investors, f, indent=2, default=str)
-        print(f"[backup] Saved {len(investors)} investors to {backup_path}")
-    except Exception as e:
-        print(f"[backup] Failed: {e}")
+    cur.close()
 
 
 def seed_db(db):
-    count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+    cur = db.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM investors")
+    row = cur.fetchone()
+    count = row["c"]
+    cur.close()
+
     if count > 0:
         return
 
-    # Priority 1: Restore from backup on persistent disk (survives redeploys)
-    backup_path = os.path.join(DATA_DIR, "investors_backup.json")
-    if os.path.exists(backup_path):
-        try:
-            with open(backup_path) as f:
-                backup_data = json.load(f)
-            if backup_data:
-                for inv in backup_data:
-                    db.execute("""
-                        INSERT INTO investors (name, role, company, eis_company, sector, amount,
-                        source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        inv.get("name"), inv.get("role"), inv.get("company"), inv.get("eis_company"),
-                        inv.get("sector"), inv.get("amount"), inv.get("source_url"), inv.get("source_type"),
-                        inv.get("source_name"), inv.get("context_quote"), inv.get("linkedin_url"), inv.get("date_found")
-                    ))
-                db.commit()
-                print(f"[seed] Restored {len(backup_data)} investors from backup")
-                return
-        except Exception as e:
-            print(f"[seed] Backup restore failed: {e}")
-
-    # Priority 2: Load seed data from JSON file bundled with the app
+    # Load seed data from JSON file bundled with the app
     seed_file = Path(__file__).parent / "seed_data.json"
     if seed_file.exists():
         with open(seed_file) as f:
             seed_data = json.load(f)
+        cur = db.cursor()
         for inv in seed_data:
-            db.execute("""
+            cur.execute("""
                 INSERT INTO investors (name, role, company, eis_company, sector, amount,
                 source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 inv.get("name"), inv.get("role"), inv.get("company"), inv.get("eis_company"),
                 inv.get("sector"), inv.get("amount"), inv.get("source_url"), inv.get("source_type"),
                 inv.get("source_name"), inv.get("context_quote"), inv.get("linkedin_url"), inv.get("date_found")
             ))
         db.commit()
+        cur.close()
         print(f"[seed] Loaded {len(seed_data)} investors from seed_data.json")
         return
 
-    # Fallback: minimal sample data
-    sample_data = [
-        {
-            "name": "James Whitfield",
-            "role": "Managing Director",
-            "company": "Beacon Capital Partners",
-            "eis_company": "Revolut",
-            "sector": "Fintech",
-            "amount": "£150,000",
-            "source_url": "https://www.techcrunch.com/example",
-            "source_type": "News",
-            "source_name": "TechCrunch",
-            "context_quote": "James Whitfield, Managing Director at Beacon Capital Partners, confirmed his personal EIS-qualifying investment into Revolut's latest round.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-02-28"
-        },
-        {
-            "name": "Sarah Ellingham",
-            "role": "Partner",
-            "company": "Venture Associates LLP",
-            "eis_company": "Graphcore",
-            "sector": "AI / Semiconductors",
-            "amount": "Undisclosed",
-            "source_url": "https://www.ft.com/example",
-            "source_type": "News",
-            "source_name": "Financial Times",
-            "context_quote": "Sarah Ellingham of Venture Associates has backed Graphcore through the Enterprise Investment Scheme, sources close to the deal confirmed.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-02-22"
-        },
-        {
-            "name": "Marcus Chen",
-            "role": "Angel Investor",
-            "company": "Independent",
-            "eis_company": "Bulb Energy",
-            "sector": "Clean Energy",
-            "amount": "£75,000",
-            "source_url": "https://www.cityam.com/example",
-            "source_type": "News",
-            "source_name": "City A.M.",
-            "context_quote": "Angel investor Marcus Chen made a £75,000 EIS investment into Bulb Energy during their Series B extension.",
-            "linkedin_url": None,
-            "date_found": "2026-02-15"
-        },
-        {
-            "name": "Victoria Hartley",
-            "role": "CEO",
-            "company": "Hartley Wealth Management",
-            "eis_company": "Brewdog",
-            "sector": "Food & Beverage",
-            "amount": "£200,000",
-            "source_url": "https://www.growthbusiness.co.uk/example",
-            "source_type": "Filing",
-            "source_name": "Companies House",
-            "context_quote": "Victoria Hartley disclosed a £200,000 EIS investment in Brewdog plc via Companies House annual confirmation statement.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-02-10"
-        },
-        {
-            "name": "Thomas Blackwood",
-            "role": "CTO",
-            "company": "Nexus Digital",
-            "eis_company": "Monzo",
-            "sector": "Fintech",
-            "amount": "£100,000",
-            "source_url": "https://twitter.com/example",
-            "source_type": "Social Media",
-            "source_name": "X (Twitter)",
-            "context_quote": "Excited to announce my personal EIS investment in @monzo. Believe this team will reshape UK banking. #EIS #Fintech",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-02-05"
-        },
-        {
-            "name": "Fiona Gallagher",
-            "role": "Investment Director",
-            "company": "Meridian Capital",
-            "eis_company": "Seedrs",
-            "sector": "Fintech",
-            "amount": "£50,000",
-            "source_url": "https://www.uktech.news/example",
-            "source_type": "News",
-            "source_name": "UKTN",
-            "context_quote": "Fiona Gallagher of Meridian Capital made a personal £50,000 EIS-qualifying investment into equity crowdfunding platform Seedrs.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-01-28"
-        },
-        {
-            "name": "Robert Ashworth",
-            "role": "Founder",
-            "company": "Ashworth Ventures",
-            "eis_company": "Darktrace",
-            "sector": "Cybersecurity",
-            "amount": "£300,000",
-            "source_url": "https://www.reuters.com/example",
-            "source_type": "News",
-            "source_name": "Reuters",
-            "context_quote": "Robert Ashworth, founder of Ashworth Ventures, has made a significant EIS-qualifying personal investment of £300,000 in cybersecurity firm Darktrace.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-01-20"
-        },
-        {
-            "name": "Emma Prescott",
-            "role": "CFO",
-            "company": "Sterling Advisory Group",
-            "eis_company": "Crowdcube",
-            "sector": "Fintech",
-            "amount": "Undisclosed",
-            "source_url": "https://www.altfi.com/example",
-            "source_type": "News",
-            "source_name": "AltFi",
-            "context_quote": "Emma Prescott, CFO of Sterling Advisory, has personally backed Crowdcube through the EIS, according to AltFi sources.",
-            "linkedin_url": None,
-            "date_found": "2026-01-15"
-        },
-        {
-            "name": "Daniel Okonkwo",
-            "role": "Portfolio Manager",
-            "company": "Atlas Fund Management",
-            "eis_company": "Cazoo",
-            "sector": "Automotive / E-commerce",
-            "amount": "£125,000",
-            "source_url": "https://www.thisismoney.co.uk/example",
-            "source_type": "News",
-            "source_name": "This is Money",
-            "context_quote": "Daniel Okonkwo disclosed a personal £125,000 EIS investment in Cazoo, the online car retailer.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2026-01-08"
-        },
-        {
-            "name": "Priya Sharma",
-            "role": "Managing Partner",
-            "company": "Sharma & Co Wealth",
-            "eis_company": "Octopus Energy",
-            "sector": "Clean Energy",
-            "amount": "£250,000",
-            "source_url": "https://www.investmentweek.co.uk/example",
-            "source_type": "Filing",
-            "source_name": "Investment Week",
-            "context_quote": "Priya Sharma, Managing Partner at Sharma & Co Wealth, made a £250,000 EIS investment into Octopus Energy Group.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2025-12-18"
-        },
-        {
-            "name": "Alex Drummond",
-            "role": "Head of Strategy",
-            "company": "Pinnacle Holdings",
-            "eis_company": "Babylon Health",
-            "sector": "HealthTech",
-            "amount": "£80,000",
-            "source_url": "https://forum.example.com/eis-thread",
-            "source_type": "Forum",
-            "source_name": "UK Investor Forum",
-            "context_quote": "Alex Drummond confirmed on an investor forum that they made an £80,000 EIS-qualifying investment in Babylon Health.",
-            "linkedin_url": None,
-            "date_found": "2025-12-10"
-        },
-        {
-            "name": "Catherine Townsend",
-            "role": "Director",
-            "company": "Townsend Financial",
-            "eis_company": "Deliveroo",
-            "sector": "Food Delivery / Logistics",
-            "amount": "£175,000",
-            "source_url": "https://www.standard.co.uk/example",
-            "source_type": "News",
-            "source_name": "Evening Standard",
-            "context_quote": "Catherine Townsend, Director of Townsend Financial, made a personal EIS investment of £175,000 in Deliveroo ahead of its IPO.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2025-11-25"
-        },
-        {
-            "name": "George Patterson",
-            "role": "Private Investor",
-            "company": "Independent",
-            "eis_company": "Wise (TransferWise)",
-            "sector": "Fintech",
-            "amount": "Undisclosed",
-            "source_url": "https://www.sifted.eu/example",
-            "source_type": "News",
-            "source_name": "Sifted",
-            "context_quote": "Private investor George Patterson is understood to have made an EIS-qualifying investment in TransferWise (now Wise) during its pre-IPO round.",
-            "linkedin_url": None,
-            "date_found": "2025-11-12"
-        },
-        {
-            "name": "Harriet Morrison",
-            "role": "Senior Analyst",
-            "company": "Threadneedle Investments",
-            "eis_company": "Checkout.com",
-            "sector": "Fintech",
-            "amount": "£90,000",
-            "source_url": "https://www.bloomberg.com/example",
-            "source_type": "News",
-            "source_name": "Bloomberg",
-            "context_quote": "Harriet Morrison of Threadneedle Investments made a personal £90,000 EIS investment in payments firm Checkout.com.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2025-10-30"
-        },
-        {
-            "name": "William Crane",
-            "role": "Venture Partner",
-            "company": "Crane Capital",
-            "eis_company": "Improbable",
-            "sector": "Gaming / Metaverse",
-            "amount": "£500,000",
-            "source_url": "https://www.wired.co.uk/example",
-            "source_type": "News",
-            "source_name": "WIRED UK",
-            "context_quote": "William Crane, Venture Partner at Crane Capital, disclosed a £500,000 EIS investment into metaverse startup Improbable.",
-            "linkedin_url": "https://linkedin.com/in/example",
-            "date_found": "2025-10-15"
-        }
-    ]
-
-    for inv in sample_data:
-        db.execute("""
-            INSERT INTO investors (name, role, company, eis_company, sector, amount,
-            source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            inv["name"], inv["role"], inv["company"], inv["eis_company"],
-            inv["sector"], inv["amount"], inv["source_url"], inv["source_type"],
-            inv["source_name"], inv["context_quote"], inv["linkedin_url"], inv["date_found"]
-        ))
-    db.commit()
+    print("[seed] No seed_data.json found. Database starts empty.")
 
 
 # --- App setup ---
 
-# Diagnostic: log where the database is and what's on the persistent disk
-print(f"[startup] DATA_DIR = {DATA_DIR}")
-print(f"[startup] DB_PATH = {DB_PATH}")
-print(f"[startup] DATA_DIR exists: {os.path.exists(DATA_DIR)}")
-print(f"[startup] DB file exists: {os.path.exists(DB_PATH)}")
-backup_path_check = os.path.join(DATA_DIR, "investors_backup.json")
-print(f"[startup] Backup file exists: {os.path.exists(backup_path_check)}")
-if os.path.exists(DATA_DIR):
-    try:
-        contents = os.listdir(DATA_DIR)
-        print(f"[startup] DATA_DIR contents: {contents}")
-    except Exception as e:
-        print(f"[startup] Cannot list DATA_DIR: {e}")
+print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
 
 db = get_db()
 init_db(db)
 seed_db(db)
 
 # Log the final count after seeding
-startup_count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+_cur = db.cursor()
+_cur.execute("SELECT COUNT(*) as c FROM investors")
+startup_count = _cur.fetchone()["c"]
+_cur.close()
 print(f"[startup] Investor count after init: {startup_count}")
-
-
-def _periodic_backup():
-    """Run a backup every 5 minutes to protect against data loss."""
-    import time as _time
-    while True:
-        _time.sleep(300)  # 5 minutes
-        try:
-            bdb = get_db()
-            count = bdb.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
-            if count > 0:
-                backup_db(bdb)
-            bdb.close()
-        except Exception as e:
-            print(f"[periodic_backup] Error: {e}")
-
-import threading
-_backup_thread = threading.Thread(target=_periodic_backup, daemon=True)
-_backup_thread.start()
-print("[startup] Periodic backup thread started (every 5 min)")
 
 
 @asynccontextmanager
 async def lifespan(app):
     yield
-    # Final backup on shutdown
     try:
-        backup_db(db)
-        print("[shutdown] Final backup saved")
+        db.close()
     except Exception:
         pass
-    db.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -470,7 +194,7 @@ def list_investors(
     params = []
 
     if search:
-        conditions.append("(name LIKE ? OR company LIKE ? OR eis_company LIKE ? OR role LIKE ?)")
+        conditions.append("(name ILIKE %s OR company ILIKE %s OR eis_company ILIKE %s OR role ILIKE %s)")
         s = f"%{search}%"
         params.extend([s, s, s, s])
 
@@ -480,23 +204,23 @@ def list_investors(
         conditions.append("(source_name IS NULL OR source_name != 'Companies House')")
 
     if source_type:
-        conditions.append("source_type = ?")
+        conditions.append("source_type = %s")
         params.append(source_type)
 
     if source_name:
-        conditions.append("source_name = ?")
+        conditions.append("source_name = %s")
         params.append(source_name)
 
     if sector:
-        conditions.append("sector = ?")
+        conditions.append("sector = %s")
         params.append(sector)
 
     if date_from:
-        conditions.append("date_found >= ?")
+        conditions.append("date_found >= %s")
         params.append(date_from)
 
     if date_to:
-        conditions.append("date_found <= ?")
+        conditions.append("date_found <= %s")
         params.append(date_to)
 
     where = " AND ".join(conditions) if conditions else "1=1"
@@ -508,14 +232,19 @@ def list_investors(
     if sort_dir not in ("asc", "desc"):
         sort_dir = "desc"
 
+    cur = db.cursor()
+
     # Count
     count_sql = f"SELECT COUNT(*) as total FROM investors WHERE {where}"
-    total = db.execute(count_sql, params).fetchone()["total"]
+    cur.execute(count_sql, params)
+    total = cur.fetchone()["total"]
 
     # Fetch
     offset = (page - 1) * per_page
-    data_sql = f"SELECT * FROM investors WHERE {where} ORDER BY {sort_by} {sort_dir} LIMIT ? OFFSET ?"
-    rows = db.execute(data_sql, params + [per_page, offset]).fetchall()
+    data_sql = f"SELECT * FROM investors WHERE {where} ORDER BY {sort_by} {sort_dir} LIMIT %s OFFSET %s"
+    cur.execute(data_sql, params + [per_page, offset])
+    rows = cur.fetchall()
+    cur.close()
 
     return {
         "investors": rows_to_list(rows),
@@ -528,7 +257,10 @@ def list_investors(
 
 @app.get("/api/investors/{investor_id}")
 def get_investor(investor_id: int):
-    row = db.execute("SELECT * FROM investors WHERE id = ?", [investor_id]).fetchone()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM investors WHERE id = %s", [investor_id])
+    row = cur.fetchone()
+    cur.close()
     if not row:
         raise HTTPException(status_code=404, detail="Investor not found")
     return row_to_dict(row)
@@ -536,35 +268,44 @@ def get_investor(investor_id: int):
 
 @app.get("/api/stats")
 def get_stats():
-    total = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+    cur = db.cursor()
+
+    cur.execute("SELECT COUNT(*) as c FROM investors")
+    total = cur.fetchone()["c"]
 
     # New this week (last 7 days)
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    new_this_week = db.execute(
-        "SELECT COUNT(*) as c FROM investors WHERE date_found >= ?", [week_ago]
-    ).fetchone()["c"]
+    cur.execute(
+        "SELECT COUNT(*) as c FROM investors WHERE date_found >= %s", [week_ago]
+    )
+    new_this_week = cur.fetchone()["c"]
 
     # Top sector
-    top_sector_row = db.execute(
+    cur.execute(
         "SELECT sector, COUNT(*) as c FROM investors GROUP BY sector ORDER BY c DESC LIMIT 1"
-    ).fetchone()
+    )
+    top_sector_row = cur.fetchone()
     top_sector = top_sector_row["sector"] if top_sector_row else "N/A"
 
     # Source types scanned
-    sources = db.execute("SELECT COUNT(DISTINCT source_type) as c FROM investors").fetchone()["c"]
+    cur.execute("SELECT COUNT(DISTINCT source_type) as c FROM investors")
+    sources = cur.fetchone()["c"]
 
     # Unique sectors list
-    sectors = [r["sector"] for r in db.execute("SELECT DISTINCT sector FROM investors ORDER BY sector").fetchall()]
+    cur.execute("SELECT DISTINCT sector FROM investors ORDER BY sector")
+    sectors = [r["sector"] for r in cur.fetchall()]
 
     # Source types list
-    source_types = [r["source_type"] for r in db.execute("SELECT DISTINCT source_type FROM investors ORDER BY source_type").fetchall()]
+    cur.execute("SELECT DISTINCT source_type FROM investors ORDER BY source_type")
+    source_types = [r["source_type"] for r in cur.fetchall()]
 
-    # Source names list (actual source: Companies House, Beauhurst, etc.)
-    source_names = [
-        r["source_name"] for r in db.execute(
-            "SELECT DISTINCT source_name FROM investors WHERE source_name IS NOT NULL AND source_name != '' ORDER BY source_name"
-        ).fetchall()
-    ]
+    # Source names list
+    cur.execute(
+        "SELECT DISTINCT source_name FROM investors WHERE source_name IS NOT NULL AND source_name != '' ORDER BY source_name"
+    )
+    source_names = [r["source_name"] for r in cur.fetchall()]
+
+    cur.close()
 
     return {
         "total_investors": total,
@@ -587,46 +328,6 @@ def trigger_scan():
     if started:
         return {"status": "started", "message": "Scan started. Poll /api/scan/status for progress."}
     return {"status": "error", "message": "Failed to start scan."}
-
-
-@app.get("/api/debug/storage")
-def debug_storage():
-    """Diagnostic endpoint to check persistent disk state."""
-    backup_path = os.path.join(DATA_DIR, "investors_backup.json")
-    backup_size = 0
-    backup_count = 0
-    if os.path.exists(backup_path):
-        backup_size = os.path.getsize(backup_path)
-        try:
-            with open(backup_path) as f:
-                backup_count = len(json.load(f))
-        except Exception:
-            pass
-
-    db_size = 0
-    if os.path.exists(DB_PATH):
-        db_size = os.path.getsize(DB_PATH)
-
-    db_count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
-
-    dir_contents = []
-    if os.path.exists(DATA_DIR):
-        try:
-            dir_contents = os.listdir(DATA_DIR)
-        except Exception:
-            pass
-
-    return {
-        "data_dir": DATA_DIR,
-        "db_path": DB_PATH,
-        "db_exists": os.path.exists(DB_PATH),
-        "db_size_bytes": db_size,
-        "db_investor_count": db_count,
-        "backup_exists": os.path.exists(backup_path),
-        "backup_size_bytes": backup_size,
-        "backup_investor_count": backup_count,
-        "data_dir_contents": dir_contents,
-    }
 
 
 @app.get("/api/scan/status")
@@ -668,21 +369,23 @@ def trigger_collection():
 def batch_upsert(batch: BatchInvestors):
     inserted = 0
     skipped = 0
+    cur = db.cursor()
 
     for inv in batch.investors:
         # Check for duplicate by name + eis_company
-        existing = db.execute(
-            "SELECT id FROM investors WHERE name = ? AND eis_company = ?",
+        cur.execute(
+            "SELECT id FROM investors WHERE name = %s AND eis_company = %s",
             [inv.name, inv.eis_company]
-        ).fetchone()
+        )
+        existing = cur.fetchone()
 
         if existing:
             # Update existing record
-            db.execute("""
-                UPDATE investors SET role=?, company=?, sector=?, amount=?,
-                source_url=?, source_type=?, source_name=?, context_quote=?,
-                linkedin_url=?, date_found=?
-                WHERE id=?
+            cur.execute("""
+                UPDATE investors SET role=%s, company=%s, sector=%s, amount=%s,
+                source_url=%s, source_type=%s, source_name=%s, context_quote=%s,
+                linkedin_url=%s, date_found=%s
+                WHERE id=%s
             """, (
                 inv.role, inv.company, inv.sector, inv.amount,
                 inv.source_url, inv.source_type, inv.source_name, inv.context_quote,
@@ -690,10 +393,10 @@ def batch_upsert(batch: BatchInvestors):
             ))
             skipped += 1
         else:
-            db.execute("""
+            cur.execute("""
                 INSERT INTO investors (name, role, company, eis_company, sector, amount,
                 source_url, source_type, source_name, context_quote, linkedin_url, date_found)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 inv.name, inv.role, inv.company, inv.eis_company, inv.sector, inv.amount,
                 inv.source_url, inv.source_type, inv.source_name, inv.context_quote,
@@ -702,27 +405,34 @@ def batch_upsert(batch: BatchInvestors):
             inserted += 1
 
     db.commit()
+    cur.close()
     return {"inserted": inserted, "updated": skipped, "total": len(batch.investors)}
 
 
 @app.get("/api/export/last")
 def get_last_export():
     """Return info about the last 'new' export."""
-    row = db.execute(
+    cur = db.cursor()
+    cur.execute(
         "SELECT exported_at, investor_count FROM export_log WHERE export_type = 'new' ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    )
+    row = cur.fetchone()
     if row:
         # Count investors added since that export
-        new_since = db.execute(
-            "SELECT COUNT(*) as c FROM investors WHERE created_at > ?", [row["exported_at"]]
-        ).fetchone()["c"]
+        cur.execute(
+            "SELECT COUNT(*) as c FROM investors WHERE created_at > %s", [row["exported_at"]]
+        )
+        new_since = cur.fetchone()["c"]
+        cur.close()
         return {
             "last_exported_at": row["exported_at"],
             "last_export_count": row["investor_count"],
             "new_since_last_export": new_since,
         }
     else:
-        total = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+        cur.execute("SELECT COUNT(*) as c FROM investors")
+        total = cur.fetchone()["c"]
+        cur.close()
         return {
             "last_exported_at": None,
             "last_export_count": 0,
@@ -873,20 +583,20 @@ def export_excel(
     params = []
 
     if search:
-        conditions.append("(name LIKE ? OR company LIKE ? OR eis_company LIKE ? OR role LIKE ?)")
+        conditions.append("(name ILIKE %s OR company ILIKE %s OR eis_company ILIKE %s OR role ILIKE %s)")
         s = f"%{search}%"
         params.extend([s, s, s, s])
     if source_type:
-        conditions.append("source_type = ?")
+        conditions.append("source_type = %s")
         params.append(source_type)
     if sector:
-        conditions.append("sector = ?")
+        conditions.append("sector = %s")
         params.append(sector)
     if date_from:
-        conditions.append("date_found >= ?")
+        conditions.append("date_found >= %s")
         params.append(date_from)
     if date_to:
-        conditions.append("date_found <= ?")
+        conditions.append("date_found <= %s")
         params.append(date_to)
 
     where = " AND ".join(conditions) if conditions else "1=1"
@@ -896,9 +606,12 @@ def export_excel(
     if sort_dir not in ("asc", "desc"):
         sort_dir = "desc"
 
-    rows = db.execute(
+    cur = db.cursor()
+    cur.execute(
         f"SELECT * FROM investors WHERE {where} ORDER BY {sort_by} {sort_dir}", params
-    ).fetchall()
+    )
+    rows = cur.fetchall()
+    cur.close()
     investors = [dict(r) for r in rows]
 
     now_str = datetime.now().strftime('%d %B %Y at %H:%M')
@@ -919,28 +632,33 @@ def export_excel(
 @app.get("/api/export/excel-new")
 def export_excel_new():
     """Export only investors added since the last 'new' export, then record this export."""
+    cur = db.cursor()
+
     # Find last export timestamp
-    last_row = db.execute(
+    cur.execute(
         "SELECT exported_at FROM export_log WHERE export_type = 'new' ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    )
+    last_row = cur.fetchone()
     last_exported_at = last_row["exported_at"] if last_row else None
 
     if last_exported_at:
-        rows = db.execute(
-            "SELECT * FROM investors WHERE created_at > ? ORDER BY created_at DESC",
+        cur.execute(
+            "SELECT * FROM investors WHERE created_at > %s ORDER BY created_at DESC",
             [last_exported_at],
-        ).fetchall()
+        )
     else:
-        rows = db.execute("SELECT * FROM investors ORDER BY created_at DESC").fetchall()
+        cur.execute("SELECT * FROM investors ORDER BY created_at DESC")
 
+    rows = cur.fetchall()
     investors = [dict(r) for r in rows]
 
     if len(investors) == 0:
+        cur.close()
         raise HTTPException(status_code=404, detail="No new investors since last export.")
 
     now = datetime.now()
     now_str = now.strftime('%d %B %Y at %H:%M')
-    since_str = last_exported_at[:16].replace("T", " ") if last_exported_at else "the beginning"
+    since_str = last_exported_at.strftime("%Y-%m-%d %H:%M") if last_exported_at else "the beginning"
     buffer = build_excel(
         investors,
         title_text="EIS Investor Collector \u2014 New Since Last Export",
@@ -948,11 +666,12 @@ def export_excel_new():
     )
 
     # Record this export
-    db.execute(
-        "INSERT INTO export_log (exported_at, investor_count, export_type) VALUES (?, ?, 'new')",
-        [now.strftime("%Y-%m-%dT%H:%M:%S"), len(investors)],
+    cur.execute(
+        "INSERT INTO export_log (exported_at, investor_count, export_type) VALUES (%s, %s, 'new')",
+        [now, len(investors)],
     )
     db.commit()
+    cur.close()
 
     filename = f"eis_investors_new_{now.strftime('%Y-%m-%d')}.xlsx"
     return StreamingResponse(
@@ -965,23 +684,27 @@ def export_excel_new():
 @app.get("/api/email/new-investors")
 def get_new_investors_for_email():
     """Return investors added since last email, and record the email event."""
-    last_row = db.execute(
+    cur = db.cursor()
+    cur.execute(
         "SELECT emailed_at FROM email_log ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    )
+    last_row = cur.fetchone()
     last_emailed_at = last_row["emailed_at"] if last_row else None
 
     if last_emailed_at:
-        rows = db.execute(
+        cur.execute(
             "SELECT name, role, company, eis_company, sector, amount, source_name, date_found "
-            "FROM investors WHERE created_at > ? ORDER BY created_at DESC",
+            "FROM investors WHERE created_at > %s ORDER BY created_at DESC",
             [last_emailed_at],
-        ).fetchall()
+        )
     else:
-        rows = db.execute(
+        cur.execute(
             "SELECT name, role, company, eis_company, sector, amount, source_name, date_found "
             "FROM investors ORDER BY created_at DESC"
-        ).fetchall()
+        )
 
+    rows = cur.fetchall()
+    cur.close()
     investors = [dict(r) for r in rows]
     return {
         "investors": investors,
@@ -993,13 +716,15 @@ def get_new_investors_for_email():
 @app.post("/api/email/mark-sent")
 def mark_email_sent(count: int = Query(0)):
     """Record that an email digest was sent."""
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    db.execute(
-        "INSERT INTO email_log (emailed_at, investor_count) VALUES (?, ?)",
+    now = datetime.now()
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO email_log (emailed_at, investor_count) VALUES (%s, %s)",
         [now, count],
     )
     db.commit()
-    return {"status": "recorded", "emailed_at": now, "count": count}
+    cur.close()
+    return {"status": "recorded", "emailed_at": now.strftime("%Y-%m-%dT%H:%M:%S"), "count": count}
 
 
 # --- Serve static frontend ---
