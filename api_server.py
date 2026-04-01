@@ -358,14 +358,58 @@ def seed_db(db):
 
 # --- App setup ---
 
+# Diagnostic: log where the database is and what's on the persistent disk
+print(f"[startup] DATA_DIR = {DATA_DIR}")
+print(f"[startup] DB_PATH = {DB_PATH}")
+print(f"[startup] DATA_DIR exists: {os.path.exists(DATA_DIR)}")
+print(f"[startup] DB file exists: {os.path.exists(DB_PATH)}")
+backup_path_check = os.path.join(DATA_DIR, "investors_backup.json")
+print(f"[startup] Backup file exists: {os.path.exists(backup_path_check)}")
+if os.path.exists(DATA_DIR):
+    try:
+        contents = os.listdir(DATA_DIR)
+        print(f"[startup] DATA_DIR contents: {contents}")
+    except Exception as e:
+        print(f"[startup] Cannot list DATA_DIR: {e}")
+
 db = get_db()
 init_db(db)
 seed_db(db)
+
+# Log the final count after seeding
+startup_count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+print(f"[startup] Investor count after init: {startup_count}")
+
+
+def _periodic_backup():
+    """Run a backup every 5 minutes to protect against data loss."""
+    import time as _time
+    while True:
+        _time.sleep(300)  # 5 minutes
+        try:
+            bdb = get_db()
+            count = bdb.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+            if count > 0:
+                backup_db(bdb)
+            bdb.close()
+        except Exception as e:
+            print(f"[periodic_backup] Error: {e}")
+
+import threading
+_backup_thread = threading.Thread(target=_periodic_backup, daemon=True)
+_backup_thread.start()
+print("[startup] Periodic backup thread started (every 5 min)")
 
 
 @asynccontextmanager
 async def lifespan(app):
     yield
+    # Final backup on shutdown
+    try:
+        backup_db(db)
+        print("[shutdown] Final backup saved")
+    except Exception:
+        pass
     db.close()
 
 
@@ -543,6 +587,46 @@ def trigger_scan():
     if started:
         return {"status": "started", "message": "Scan started. Poll /api/scan/status for progress."}
     return {"status": "error", "message": "Failed to start scan."}
+
+
+@app.get("/api/debug/storage")
+def debug_storage():
+    """Diagnostic endpoint to check persistent disk state."""
+    backup_path = os.path.join(DATA_DIR, "investors_backup.json")
+    backup_size = 0
+    backup_count = 0
+    if os.path.exists(backup_path):
+        backup_size = os.path.getsize(backup_path)
+        try:
+            with open(backup_path) as f:
+                backup_count = len(json.load(f))
+        except Exception:
+            pass
+
+    db_size = 0
+    if os.path.exists(DB_PATH):
+        db_size = os.path.getsize(DB_PATH)
+
+    db_count = db.execute("SELECT COUNT(*) as c FROM investors").fetchone()["c"]
+
+    dir_contents = []
+    if os.path.exists(DATA_DIR):
+        try:
+            dir_contents = os.listdir(DATA_DIR)
+        except Exception:
+            pass
+
+    return {
+        "data_dir": DATA_DIR,
+        "db_path": DB_PATH,
+        "db_exists": os.path.exists(DB_PATH),
+        "db_size_bytes": db_size,
+        "db_investor_count": db_count,
+        "backup_exists": os.path.exists(backup_path),
+        "backup_size_bytes": backup_size,
+        "backup_investor_count": backup_count,
+        "data_dir_contents": dir_contents,
+    }
 
 
 @app.get("/api/scan/status")
