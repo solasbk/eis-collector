@@ -23,7 +23,6 @@ const pageIndicator = document.getElementById("page-indicator");
 const prevBtn = document.getElementById("prev-page");
 const nextBtn = document.getElementById("next-page");
 const searchInput = document.getElementById("search-input");
-const filterSource = document.getElementById("filter-source");
 const filterSector = document.getElementById("filter-sector");
 const filterDateFrom = document.getElementById("filter-date-from");
 const filterDateTo = document.getElementById("filter-date-to");
@@ -97,7 +96,6 @@ async function fetchStats() {
     // Populate filter options
     sectors = data.sectors || [];
     sourceTypes = data.source_types || [];
-    sourceNames = data.source_names || [];
     populateFilters();
   } catch (err) {
     console.error("Failed to fetch stats:", err);
@@ -125,15 +123,6 @@ function animateNumber(id, target) {
 }
 
 function populateFilters() {
-  // Source names (actual sources: Companies House, Beauhurst, etc.)
-  filterSource.innerHTML = '<option value="">All Sources</option>';
-  sourceNames.forEach(function (sn) {
-    var opt = document.createElement("option");
-    opt.value = sn;
-    opt.textContent = sn;
-    filterSource.appendChild(opt);
-  });
-
   // Sectors
   filterSector.innerHTML = '<option value="">All Sectors</option>';
   sectors.forEach(function (s) {
@@ -162,9 +151,6 @@ async function fetchInvestors() {
 
   var entityType = filterEntityType.value;
   if (entityType) { params.set("entity_type", entityType); }
-
-  var source = filterSource.value;
-  if (source) { params.set("source_name", source); }
 
   var sector = filterSector.value;
   if (sector) { params.set("sector", sector); }
@@ -367,8 +353,6 @@ async function exportCSV() {
 
     var search = searchInput.value.trim();
     if (search) { params.set("search", search); }
-    var source = filterSource.value;
-    if (source) { params.set("source_type", source); }
     var sector = filterSector.value;
     if (sector) { params.set("sector", sector); }
 
@@ -439,8 +423,6 @@ async function exportExcel() {
 
     var search = searchInput.value.trim();
     if (search) { params.set("search", search); }
-    var source = filterSource.value;
-    if (source) { params.set("source_type", source); }
     var sector = filterSector.value;
     if (sector) { params.set("sector", sector); }
     var dateFrom = filterDateFrom.value;
@@ -712,11 +694,6 @@ searchInput.addEventListener("input", function () {
     currentPage = 1;
     fetchInvestors();
   }, 300);
-});
-
-filterSource.addEventListener("change", function () {
-  currentPage = 1;
-  fetchInvestors();
 });
 
 filterSector.addEventListener("change", function () {
