@@ -774,36 +774,51 @@ async def import_excel(file: UploadFile = File(...)):
         wb = load_workbook(io.BytesIO(contents), data_only=True)
         ws = wb.active
 
-        # Find the header row — scan first 5 rows for one that looks like column headers
-        header_row_idx = None
-        headers = []
+        # Read all rows
         all_rows_raw = list(ws.iter_rows(values_only=True))
+        if not all_rows_raw:
+            return {"status": "empty", "message": "File is empty.", "imported": 0, "duplicates": 0}
 
-        for row_idx, row in enumerate(all_rows_raw[:5]):
-            row_vals = [str(v).strip().lower() if v else "" for v in row]
-            # A header row has multiple non-empty cells and contains keyword matches
-            non_empty = sum(1 for v in row_vals if v)
-            has_name_col = any(
-                any(kw in v for kw in ["name", "investor", "contact", "person"])
-                for v in row_vals if v
-            )
-            if non_empty >= 3 and has_name_col:
+        # Find the header row — scan first 5 rows for one with 3+ cells
+        # and a name-like column
+        header_row_idx = 0
+        name_keywords = ["name", "investor", "contact", "person"]
+
+        for row_idx in range(min(5, len(all_rows_raw))):
+            cells = [str(v).strip().lower() if v else "" for v in all_rows_raw[row_idx]]
+            non_empty = sum(1 for c in cells if c)
+            has_name = any(any(kw == c or kw in c for kw in name_keywords) for c in cells if c)
+            if non_empty >= 3 and has_name:
                 header_row_idx = row_idx
-                headers = [v if v else f"col_{i}" for i, v in enumerate(row_vals)]
                 break
 
-        if header_row_idx is None:
-            # Fallback: use row 1 as headers
-            header_row_idx = 0
-            headers = [str(v).strip().lower() if v else f"col_{i}" for i, v in enumerate(all_rows_raw[0])]
+        # Build clean header list
+        raw_header_row = all_rows_raw[header_row_idx]
+        headers = []
+        for i, v in enumerate(raw_header_row):
+            h = str(v).strip().lower() if v else f"col_{i}"
+            # Remove non-breaking spaces and other invisible chars
+            h = h.replace('\u00a0', ' ').replace('\u200b', '').strip()
+            headers.append(h)
 
-        # Map columns to our schema using fuzzy matching
+        # Map columns
         col_map = _map_columns(headers)
+
+        # If mapping still failed, just assign columns by position
+        # based on what the app's own export produces
+        if not col_map.get("name") and len(headers) >= 6:
+            # Assume standard order: name, role, company, eis_company, sector, amount, ...
+            positional = ["name", "role", "company", "eis_company", "sector", "amount",
+                          "source_name", "source_type", "date_found", "linkedin_url", "source_url"]
+            col_map = {}
+            for idx, field in enumerate(positional):
+                if idx < len(headers):
+                    col_map[field] = idx
 
         if not col_map.get("name"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Could not find a 'name' column. Found columns: {', '.join(headers)}"
+                detail=f"Could not find a 'name' column. Headers: {headers}. Mapped: {col_map}"
             )
 
         # Read all data rows (everything after the header row)
