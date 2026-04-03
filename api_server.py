@@ -200,8 +200,11 @@ def list_investors(
 
     if origin == "ch":
         conditions.append("source_name = 'Companies House'")
+    elif origin == "tr1":
+        conditions.append("source_name = 'LSE TR1 Filing'")
     elif origin == "web":
-        conditions.append("(source_name IS NULL OR source_name != 'Companies House')")
+        conditions.append("(source_name IS NULL OR (source_name != 'Companies House' AND source_name != 'LSE TR1 Filing'))")
+
 
     if source_type:
         conditions.append("source_type = %s")
@@ -352,6 +355,24 @@ def trigger_ch_scan():
 def ch_scan_status():
     from ch_scanner import get_ch_scan_status
     return get_ch_scan_status()
+
+
+@app.post("/api/tr1-scan")
+def trigger_tr1_scan():
+    from tr1_scanner import run_tr1_scan, get_tr1_scan_status
+    status = get_tr1_scan_status()
+    if status["running"]:
+        return {"status": "already_running", "message": "A TR1 scan is already in progress."}
+    started = run_tr1_scan()
+    if started:
+        return {"status": "started", "message": "TR1 scan started. Poll /api/tr1-scan/status for progress."}
+    return {"status": "error", "message": "Failed to start TR1 scan."}
+
+
+@app.get("/api/tr1-scan/status")
+def tr1_scan_status():
+    from tr1_scanner import get_tr1_scan_status
+    return get_tr1_scan_status()
 
 
 # Keep legacy endpoint for backward compatibility

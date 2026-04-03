@@ -38,6 +38,7 @@ const exportNewBtn = document.getElementById("export-new-btn");
 const exportNewBadge = document.getElementById("export-new-badge");
 const runCollectionBtn = document.getElementById("run-collection-btn");
 const runChBtn = document.getElementById("run-ch-btn");
+const runTr1Btn = document.getElementById("run-tr1-btn");
 const filterOrigin = document.getElementById("filter-origin");
 const toast = document.getElementById("toast");
 const scanStatusBar = document.getElementById("scan-status-bar");
@@ -760,6 +761,7 @@ exportExcelBtn.addEventListener("click", exportExcel);
 exportNewBtn.addEventListener("click", exportNew);
 runCollectionBtn.addEventListener("click", runCollection);
 if (runChBtn) runChBtn.addEventListener("click", runChScan);
+if (runTr1Btn) runTr1Btn.addEventListener("click", runTr1Scan);
 
 // Close detail on Escape
 document.addEventListener("keydown", function (e) {
@@ -856,6 +858,82 @@ function resetChButton() {
   if (btnSvg) btnSvg.style.animation = "";
 }
 
+/* ─── TR1 Filings Scan ─── */
+let tr1PollingInterval = null;
+
+async function runTr1Scan() {
+  try {
+    runTr1Btn.disabled = true;
+    var btnSpan = runTr1Btn.querySelector("span");
+    var btnSvg = runTr1Btn.querySelector("svg");
+    if (btnSpan) btnSpan.textContent = "Scanning...";
+    if (btnSvg) btnSvg.style.animation = "spin 1s linear infinite";
+
+    var res = await fetch(API + "/api/tr1-scan", { method: "POST" });
+    var data = await res.json();
+
+    if (data.status === "already_running") {
+      showToast("TR1 scan already running.");
+      startTr1Polling();
+      return;
+    }
+
+    if (data.status === "started") {
+      showToast("TR1 filings scan started...", 5000);
+      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting TR1 announcement scan..." });
+      startTr1Polling();
+    } else {
+      showToast(data.message || "Failed to start TR1 scan.");
+      resetTr1Button();
+    }
+  } catch (err) {
+    console.error("TR1 scan failed:", err);
+    showToast("Failed to start TR1 scan.");
+    resetTr1Button();
+  }
+}
+
+function startTr1Polling() {
+  if (tr1PollingInterval) clearInterval(tr1PollingInterval);
+  tr1PollingInterval = setInterval(pollTr1Status, 2000);
+}
+
+async function pollTr1Status() {
+  try {
+    var res = await fetch(API + "/api/tr1-scan/status");
+    var status = await res.json();
+    updateStatusBar(status);
+
+    if (!status.running) {
+      clearInterval(tr1PollingInterval);
+      tr1PollingInterval = null;
+      resetTr1Button();
+
+      if (status.phase === "done") {
+        showToast(status.phase_detail || "TR1 scan complete.", 8000);
+        showScanLog(status);
+        fetchStats();
+        fetchInvestors();
+        updateExportNewBadge();
+      } else if (status.phase === "error") {
+        showToast("TR1 scan error: " + (status.error || "Unknown error"), 5000);
+        showScanLog(status);
+      }
+    }
+  } catch (err) {
+    console.error("TR1 polling error:", err);
+  }
+}
+
+function resetTr1Button() {
+  if (!runTr1Btn) return;
+  runTr1Btn.disabled = false;
+  var btnSpan = runTr1Btn.querySelector("span");
+  var btnSvg = runTr1Btn.querySelector("svg");
+  if (btnSpan) btnSpan.textContent = "TR1 Filings";
+  if (btnSvg) btnSvg.style.animation = "";
+}
+
 // Check if any scan is already running on page load
 (async function checkRunningStatus() {
   try {
@@ -881,6 +959,21 @@ function resetChButton() {
       }
       updateStatusBar(chStatus);
       startChPolling();
+    }
+  } catch (e) {}
+  try {
+    var res3 = await fetch(API + "/api/tr1-scan/status");
+    var tr1Status = await res3.json();
+    if (tr1Status.running) {
+      if (runTr1Btn) {
+        runTr1Btn.disabled = true;
+        var st = runTr1Btn.querySelector("span");
+        var sv = runTr1Btn.querySelector("svg");
+        if (st) st.textContent = "Scanning...";
+        if (sv) sv.style.animation = "spin 1s linear infinite";
+      }
+      updateStatusBar(tr1Status);
+      startTr1Polling();
     }
   } catch (e) {}
 })();
