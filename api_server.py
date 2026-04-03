@@ -885,36 +885,64 @@ async def import_excel(file: UploadFile = File(...)):
 
 
 def _map_columns(headers):
-    """Map Excel column headers to our investor schema fields."""
-    col_map = {}
+    """Map Excel column headers to our investor schema fields.
     
-    # Define keyword patterns for each field
-    patterns = {
-        "name": ["name", "investor", "person", "contact", "full name", "investor name"],
-        "role": ["role", "title", "position", "job title", "job"],
-        "company": ["company", "firm", "organisation", "organization", "entity", "employer"],
-        "eis_company": ["eis company", "eis", "investee", "portfolio company", "invested in", "target company", "investment"],
+    Strategy: first pass tries exact matches, second pass tries substring.
+    Each column can only be assigned to one field.
+    """
+    col_map = {}
+    used_cols = set()
+    
+    # Exact matches first (header == keyword)
+    exact = {
+        "name": ["name", "investor name", "full name", "contact name", "person"],
+        "role": ["role", "title", "position", "job title"],
+        "company": ["company", "firm", "organisation", "organization", "employer"],
+        "eis_company": ["eis company", "eis_company", "investee", "portfolio company", "target company", "invested in"],
         "sector": ["sector", "industry", "vertical", "category"],
-        "amount": ["amount", "investment amount", "size", "value", "invested"],
-        "source_url": ["url", "source url", "link", "website"],
-        "source_name": ["source", "source name", "origin", "data source"],
-        "linkedin_url": ["linkedin", "linkedin url", "profile"],
+        "amount": ["amount", "investment amount", "invested"],
+        "source_url": ["source url", "url", "link", "website"],
+        "source_type": ["source type", "type"],
+        "source_name": ["source", "source name", "data source", "origin"],
+        "linkedin_url": ["linkedin", "linkedin url", "profile", "linkedin profile"],
         "context_quote": ["context", "notes", "quote", "description", "details", "comments"],
+        "date_found": ["date found", "date", "date_found", "found date"],
     }
     
-    for field, keywords in patterns.items():
+    # Pass 1: exact match (header equals keyword)
+    for field, keywords in exact.items():
         for i, header in enumerate(headers):
-            if any(kw in header for kw in keywords):
-                if field not in col_map:  # first match wins
-                    col_map[field] = i
-                    break
+            if i in used_cols:
+                continue
+            if header in keywords:
+                col_map[field] = i
+                used_cols.add(i)
+                break
     
-    # If no eis_company found, check if there's a second "company" column
-    # or anything with "invested" in it
-    if "eis_company" not in col_map:
+    # Pass 2: substring match for any fields still unmapped
+    substring = {
+        "name": ["name", "investor", "contact", "person"],
+        "role": ["role", "title", "position"],
+        "company": ["company", "firm", "organisation"],
+        "eis_company": ["eis", "investee", "portfolio", "target"],
+        "sector": ["sector", "industry"],
+        "amount": ["amount", "invested", "size", "value"],
+        "source_url": ["url", "link"],
+        "source_name": ["source"],
+        "linkedin_url": ["linkedin"],
+        "context_quote": ["note", "context", "comment", "detail"],
+        "date_found": ["date"],
+    }
+    
+    for field, keywords in substring.items():
+        if field in col_map:
+            continue
         for i, header in enumerate(headers):
-            if i != col_map.get("company") and any(kw in header for kw in ["company", "stock", "holding"]):
-                col_map["eis_company"] = i
+            if i in used_cols:
+                continue
+            if any(kw in header for kw in keywords):
+                col_map[field] = i
+                used_cols.add(i)
                 break
     
     return col_map
