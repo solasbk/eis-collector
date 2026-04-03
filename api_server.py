@@ -774,11 +774,28 @@ async def import_excel(file: UploadFile = File(...)):
         wb = load_workbook(io.BytesIO(contents), data_only=True)
         ws = wb.active
 
-        # Read headers from first row
+        # Find the header row — scan first 5 rows for one that looks like column headers
+        header_row_idx = None
         headers = []
-        for i, val in enumerate(next(ws.iter_rows(min_row=1, max_row=1, values_only=True))):
-            header = str(val).strip().lower() if val else f"col_{i}"
-            headers.append(header)
+        all_rows_raw = list(ws.iter_rows(values_only=True))
+
+        for row_idx, row in enumerate(all_rows_raw[:5]):
+            row_vals = [str(v).strip().lower() if v else "" for v in row]
+            # A header row has multiple non-empty cells and contains keyword matches
+            non_empty = sum(1 for v in row_vals if v)
+            has_name_col = any(
+                any(kw in v for kw in ["name", "investor", "contact", "person"])
+                for v in row_vals if v
+            )
+            if non_empty >= 3 and has_name_col:
+                header_row_idx = row_idx
+                headers = [v if v else f"col_{i}" for i, v in enumerate(row_vals)]
+                break
+
+        if header_row_idx is None:
+            # Fallback: use row 1 as headers
+            header_row_idx = 0
+            headers = [str(v).strip().lower() if v else f"col_{i}" for i, v in enumerate(all_rows_raw[0])]
 
         # Map columns to our schema using fuzzy matching
         col_map = _map_columns(headers)
@@ -789,9 +806,9 @@ async def import_excel(file: UploadFile = File(...)):
                 detail=f"Could not find a 'name' column. Found columns: {', '.join(headers)}"
             )
 
-        # Read all data rows
+        # Read all data rows (everything after the header row)
         rows_data = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
+        for row in all_rows_raw[header_row_idx + 1:]:
             if not any(row):  # skip empty rows
                 continue
             investor = {}
