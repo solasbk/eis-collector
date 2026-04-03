@@ -180,6 +180,7 @@ def rows_to_list(rows):
 def list_investors(
     search: Optional[str] = Query(None),
     origin: Optional[str] = Query(None),
+    entity_type: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None),
     source_name: Optional[str] = Query(None),
     sector: Optional[str] = Query(None),
@@ -204,6 +205,11 @@ def list_investors(
         conditions.append("source_name = 'LSE TR1 Filing'")
     elif origin == "web":
         conditions.append("(source_name IS NULL OR (source_name != 'Companies House' AND source_name != 'LSE TR1 Filing'))")
+
+    if entity_type == "individual":
+        conditions.append("(company != 'Organisation' OR company IS NULL)")
+    elif entity_type == "organisation":
+        conditions.append("company = 'Organisation'")
 
 
     if source_type:

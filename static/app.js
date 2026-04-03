@@ -40,6 +40,7 @@ const runCollectionBtn = document.getElementById("run-collection-btn");
 const runChBtn = document.getElementById("run-ch-btn");
 const runTr1Btn = document.getElementById("run-tr1-btn");
 const filterOrigin = document.getElementById("filter-origin");
+const filterEntityType = document.getElementById("filter-entity-type");
 const toast = document.getElementById("toast");
 const scanStatusBar = document.getElementById("scan-status-bar");
 const scanStatusDot = document.getElementById("scan-status-dot");
@@ -158,6 +159,9 @@ async function fetchInvestors() {
 
   var origin = filterOrigin.value;
   if (origin) { params.set("origin", origin); }
+
+  var entityType = filterEntityType.value;
+  if (entityType) { params.set("entity_type", entityType); }
 
   var source = filterSource.value;
   if (source) { params.set("source_name", source); }
@@ -731,6 +735,11 @@ filterDateTo.addEventListener("change", function () {
 });
 
 filterOrigin.addEventListener("change", function () {
+  currentPage = 1;
+  fetchInvestors();
+});
+
+filterEntityType.addEventListener("change", function () {
   currentPage = 1;
   fetchInvestors();
 });

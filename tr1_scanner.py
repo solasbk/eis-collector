@@ -203,15 +203,15 @@ Extract the following for each person/entity named in the notification:
 - reason: Brief reason (acquisition, disposal, event changing breakdown)
 
 IMPORTANT:
-- Only extract INDIVIDUAL PERSONS (natural persons), not corporate entities, funds, or investment firms
-- If the notifier is a company/fund but field 9 names an "ultimate controlling natural person", extract that person
-- Skip entries where only corporate entities are named with no individual persons
-- If no individual persons are identifiable, return an empty array
+- Extract ALL persons and entities named in the notification — both individual persons AND corporate entities (funds, investment firms, etc.)
+- For each entry, set "entity_type" to either "Individual" or "Organisation"
+- If the notifier is a company/fund AND field 9 also names an ultimate controlling natural person, extract BOTH as separate entries
+- If no persons or entities are identifiable, return an empty array
 
 Return ONLY a JSON array. Example:
-[{{"name": "John Smith", "issuer": "Acme PLC", "holding_pct": "5.2%", "num_shares": "1500000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights"}}]
+[{{"name": "John Smith", "issuer": "Acme PLC", "holding_pct": "5.2%", "num_shares": "1500000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Individual"}}, {{"name": "BlackRock Fund Advisors", "issuer": "Acme PLC", "holding_pct": "8.1%", "num_shares": "3200000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Organisation"}}]
 
-If no individual investors found, return: []"""
+If no persons or entities found, return: []"""
 
     # Try Gemini first
     if gemini_key:
@@ -380,17 +380,18 @@ def run_tr1_scan():
                     if extracted:
                         _tr1_log(f"Page {i+1}: found {len(extracted)} individual(s)")
                         for item in extracted:
+                            entity_type = item.get("entity_type", "Individual")
                             investor = {
                                 "name": item.get("name", "").strip(),
                                 "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
-                                "company": "Independent",
+                                "company": entity_type,
                                 "eis_company": item.get("issuer", "").strip(),
                                 "sector": "Listed Company",
                                 "amount": f"{item.get('num_shares', 'N/A')} shares",
                                 "source_url": result["url"],
                                 "source_type": "Filing",
                                 "source_name": "LSE TR1 Filing",
-                                "context_quote": f"TR1 notification: {item.get('reason', 'Major holding')}. Holding: {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). Date: {item.get('notification_date', 'N/A')}",
+                                "context_quote": f"TR1 notification ({entity_type}): {item.get('reason', 'Major holding')}. Holding: {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). Date: {item.get('notification_date', 'N/A')}",
                                 "linkedin_url": None,
                                 "date_found": today,
                             }
