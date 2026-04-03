@@ -844,6 +844,51 @@ function resetChButton() {
   if (btnSvg) btnSvg.style.animation = "";
 }
 
+/* ─── Excel Import ─── */
+var importFileInput = document.getElementById("import-file-input");
+var importBtn = document.getElementById("import-btn");
+
+if (importFileInput) {
+  importFileInput.addEventListener("change", async function () {
+    var file = importFileInput.files[0];
+    if (!file) return;
+
+    var importSpan = importBtn.querySelector("span");
+    if (importSpan) importSpan.textContent = "Importing...";
+    importBtn.style.pointerEvents = "none";
+    importBtn.style.opacity = "0.6";
+
+    try {
+      var formData = new FormData();
+      formData.append("file", file);
+
+      var res = await fetch(API + "/api/import/excel", {
+        method: "POST",
+        body: formData,
+      });
+      var data = await res.json();
+
+      if (res.ok) {
+        showToast(data.message || "Import complete.", 8000);
+        fetchStats();
+        fetchInvestors();
+        updateExportNewBadge();
+      } else {
+        showToast("Import error: " + (data.detail || "Unknown error"), 5000);
+      }
+    } catch (err) {
+      console.error("Import failed:", err);
+      showToast("Import failed. Check the file format.", 5000);
+    }
+
+    // Reset
+    if (importSpan) importSpan.textContent = "Import";
+    importBtn.style.pointerEvents = "";
+    importBtn.style.opacity = "";
+    importFileInput.value = "";  // allow re-selecting same file
+  });
+}
+
 /* ─── TR1 Filings Scan ─── */
 let tr1PollingInterval = null;
 

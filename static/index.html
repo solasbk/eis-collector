@@ -51,6 +51,11 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/><path d="M9 9h.01M15 9h.01M9 13h.01M15 13h.01"/></svg>
           <span>Companies House</span>
         </button>
+        <label class="btn btn-secondary btn-sm" id="import-btn" for="import-file-input" style="cursor:pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>Import</span>
+        </label>
+        <input type="file" id="import-file-input" accept=".xlsx,.xls" style="display:none">
         <button class="btn btn-accent btn-sm" id="run-tr1-btn">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
           <span>TR1 Filings</span>
@@ -106,6 +111,7 @@
           <option value="web">Web Scan</option>
           <option value="ch">Companies House</option>
           <option value="tr1">TR1 Filings</option>
+          <option value="import">Imported</option>
         </select>
         <select id="filter-entity-type" class="filter-select">
           <option value="">All Entity Types</option>

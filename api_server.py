@@ -12,12 +12,12 @@ from typing import Optional
 import psycopg2
 import psycopg2.extras
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 
 
@@ -203,8 +203,11 @@ def list_investors(
         conditions.append("source_name = 'Companies House'")
     elif origin == "tr1":
         conditions.append("source_name = 'LSE TR1 Filing'")
+    elif origin == "import":
+        conditions.append("source_name = 'Excel Import'")
     elif origin == "web":
-        conditions.append("(source_name IS NULL OR (source_name != 'Companies House' AND source_name != 'LSE TR1 Filing'))")
+        conditions.append("(source_name IS NULL OR (source_name != 'Companies House' AND source_name != 'LSE TR1 Filing' AND source_name != 'Excel Import'))")
+
 
     if entity_type == "individual":
         conditions.append("(company != 'Organisation' OR company IS NULL)")
@@ -752,6 +755,152 @@ def mark_email_sent(count: int = Query(0)):
     db.commit()
     cur.close()
     return {"status": "recorded", "emailed_at": now.strftime("%Y-%m-%dT%H:%M:%S"), "count": count}
+
+
+# --- Import from Excel ---
+
+@app.post("/api/import/excel")
+async def import_excel(file: UploadFile = File(...)):
+    """Import contacts from an uploaded Excel file.
+    
+    Reads the Excel, maps columns intelligently to our schema,
+    deduplicates against existing records, and inserts new ones.
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Please upload an .xlsx or .xls file.")
+
+    try:
+        contents = await file.read()
+        wb = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
+        ws = wb.active
+
+        # Read headers from first row
+        headers = []
+        for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=False)):
+            val = str(cell.value).strip() if cell.value else f"col_{cell.column}"
+            headers.append(val.lower())
+
+        # Map columns to our schema using fuzzy matching
+        col_map = _map_columns(headers)
+
+        if not col_map.get("name"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find a 'name' column. Found columns: {', '.join(headers)}"
+            )
+
+        # Read all data rows
+        rows_data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not any(row):  # skip empty rows
+                continue
+            investor = {}
+            for field, col_idx in col_map.items():
+                val = row[col_idx] if col_idx < len(row) else None
+                investor[field] = str(val).strip() if val is not None else ""
+            rows_data.append(investor)
+
+        wb.close()
+
+        if not rows_data:
+            return {"status": "empty", "message": "No data rows found in the file.", "imported": 0, "duplicates": 0}
+
+        # Insert into database with dedup
+        today = datetime.now().strftime("%Y-%m-%d")
+        idb = get_db()
+        cur = idb.cursor()
+        inserted = 0
+        duplicated = 0
+
+        for inv in rows_data:
+            name = inv.get("name", "").strip()
+            if not name:
+                continue
+
+            eis_company = inv.get("eis_company", "").strip()
+
+            # Check for duplicate
+            cur.execute(
+                "SELECT id FROM investors WHERE name = %s AND eis_company = %s",
+                (name, eis_company)
+            )
+            if cur.fetchone():
+                duplicated += 1
+                continue
+
+            cur.execute("""
+                INSERT INTO investors (name, role, company, eis_company, sector, amount,
+                source_url, source_type, source_name, context_quote, linkedin_url, date_found)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                name,
+                inv.get("role", ""),
+                inv.get("company", ""),
+                eis_company,
+                inv.get("sector", ""),
+                inv.get("amount", ""),
+                inv.get("source_url", ""),
+                inv.get("source_type", "Import"),
+                inv.get("source_name", "Excel Import"),
+                inv.get("context_quote", f"Imported from {file.filename}"),
+                inv.get("linkedin_url", ""),
+                inv.get("date_found", today),
+            ))
+            inserted += 1
+
+        idb.commit()
+        cur.close()
+        idb.close()
+
+        return {
+            "status": "ok",
+            "message": f"Imported {inserted} new contacts, {duplicated} duplicates skipped.",
+            "imported": inserted,
+            "duplicates": duplicated,
+            "total_rows": len(rows_data),
+            "columns_mapped": {k: headers[v] for k, v in col_map.items()},
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+def _map_columns(headers):
+    """Map Excel column headers to our investor schema fields."""
+    col_map = {}
+    
+    # Define keyword patterns for each field
+    patterns = {
+        "name": ["name", "investor", "person", "contact", "full name", "investor name"],
+        "role": ["role", "title", "position", "job title", "job"],
+        "company": ["company", "firm", "organisation", "organization", "entity", "employer"],
+        "eis_company": ["eis company", "eis", "investee", "portfolio company", "invested in", "target company", "investment"],
+        "sector": ["sector", "industry", "vertical", "category"],
+        "amount": ["amount", "investment amount", "size", "value", "invested"],
+        "source_url": ["url", "source url", "link", "website"],
+        "source_name": ["source", "source name", "origin", "data source"],
+        "linkedin_url": ["linkedin", "linkedin url", "profile"],
+        "context_quote": ["context", "notes", "quote", "description", "details", "comments"],
+    }
+    
+    for field, keywords in patterns.items():
+        for i, header in enumerate(headers):
+            if any(kw in header for kw in keywords):
+                if field not in col_map:  # first match wins
+                    col_map[field] = i
+                    break
+    
+    # If no eis_company found, check if there's a second "company" column
+    # or anything with "invested" in it
+    if "eis_company" not in col_map:
+        for i, header in enumerate(headers):
+            if i != col_map.get("company") and any(kw in header for kw in ["company", "stock", "holding"]):
+                col_map["eis_company"] = i
+                break
+    
+    return col_map
 
 
 # --- Serve static frontend ---
