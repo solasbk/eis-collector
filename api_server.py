@@ -806,7 +806,7 @@ async def import_excel(file: UploadFile = File(...)):
 
         # If mapping still failed, just assign columns by position
         # based on what the app's own export produces
-        if not col_map.get("name") and len(headers) >= 6:
+        if "name" not in col_map and len(headers) >= 6:
             # Assume standard order: name, role, company, eis_company, sector, amount, ...
             positional = ["name", "role", "company", "eis_company", "sector", "amount",
                           "source_name", "source_type", "date_found", "linkedin_url", "source_url"]
@@ -815,7 +815,7 @@ async def import_excel(file: UploadFile = File(...)):
                 if idx < len(headers):
                     col_map[field] = idx
 
-        if not col_map.get("name"):
+        if "name" not in col_map:
             raise HTTPException(
                 status_code=400,
                 detail=f"Could not find a 'name' column. Headers: {headers}. Mapped: {col_map}"
