@@ -771,14 +771,14 @@ async def import_excel(file: UploadFile = File(...)):
 
     try:
         contents = await file.read()
-        wb = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
+        wb = load_workbook(io.BytesIO(contents), data_only=True)
         ws = wb.active
 
         # Read headers from first row
         headers = []
-        for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=False)):
-            val = str(cell.value).strip() if cell.value else f"col_{cell.column}"
-            headers.append(val.lower())
+        for i, val in enumerate(next(ws.iter_rows(min_row=1, max_row=1, values_only=True))):
+            header = str(val).strip().lower() if val else f"col_{i}"
+            headers.append(header)
 
         # Map columns to our schema using fuzzy matching
         col_map = _map_columns(headers)
