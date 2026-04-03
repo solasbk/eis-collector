@@ -367,14 +367,14 @@ def ch_scan_status():
 
 
 @app.post("/api/tr1-scan")
-def trigger_tr1_scan():
+def trigger_tr1_scan(days_back: int = Query(30, ge=1, le=3650)):
     from tr1_scanner import run_tr1_scan, get_tr1_scan_status
     status = get_tr1_scan_status()
     if status["running"]:
         return {"status": "already_running", "message": "A TR1 scan is already in progress."}
-    started = run_tr1_scan()
+    started = run_tr1_scan(days_back=days_back)
     if started:
-        return {"status": "started", "message": "TR1 scan started. Poll /api/tr1-scan/status for progress."}
+        return {"status": "started", "message": f"TR1 scan started ({days_back} days). Poll /api/tr1-scan/status for progress."}
     return {"status": "error", "message": "Failed to start TR1 scan."}
 
 

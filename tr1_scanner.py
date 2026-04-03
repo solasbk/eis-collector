@@ -1,9 +1,11 @@
 """tr1_scanner.py -- TR1 RNS announcement scanner.
 
 Searches for TR1 (Notification of Major Holdings) announcements
-from the London Stock Exchange RNS feed via Investegate and the
-LSE news API. Extracts individual investor/shareholder names,
-companies, and holding details.
+from the London Stock Exchange RNS feed. Uses Serper to find
+TR1 pages on Investegate, FT Markets, and other financial sites,
+then extracts investor/shareholder data using Gemini.
+
+Supports configurable date ranges via the days_back parameter.
 """
 
 import json
@@ -11,7 +13,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import httpx
 from bs4 import BeautifulSoup
@@ -32,6 +34,7 @@ _tr1_state = {
     "investors_duplicate": 0,
     "error": None,
     "log": [],
+    "days_back": 30,
 }
 
 
@@ -48,54 +51,116 @@ def _tr1_update(**kwargs):
 def _tr1_log(msg):
     with _tr1_lock:
         _tr1_state["log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-        if len(_tr1_state["log"]) > 150:
-            _tr1_state["log"] = _tr1_state["log"][-150:]
+        if len(_tr1_state["log"]) > 200:
+            _tr1_state["log"] = _tr1_state["log"][-200:]
     print(f"[tr1_scanner] {msg}")
 
 
-# ── Investegate search URLs ───────────────────────────────────────
-# Investegate allows searching RNS announcements by type.
-# TR1 announcements have titles containing "TR1" or "TR-1" or
-# "Notification of Major Holdings"
+# ── Page limits ───────────────────────────────────────────────────
+TR1_PAGE_FETCH_LIMIT = 150
+TR1_PAGE_MAX_CHARS = 10000
 
-INVESTEGATE_SEARCH_URL = "https://www.investegate.co.uk/Index.aspx"
-INVESTEGATE_ANN_BASE = "https://www.investegate.co.uk"
 
-# We search for TR1 announcements across multiple pages
-# Investegate search: ?SearchType=2&SearchText=TR-1+notification
-# Also search the LSE news API for additional coverage
-
-# ── Search strategies ─────────────────────────────────────────────
-# 1. Investegate advanced search for TR1 announcements
-# 2. Google/Serper search for TR1 announcements on various sites
-# 3. LSE API for recent RNS announcements
-
-SERPER_TR1_QUERIES = [
-    'site:investegate.co.uk "TR-1" "notification of major holdings"',
-    'site:investegate.co.uk "TR1" "notification of major holdings" 2026',
-    'site:investegate.co.uk "TR-1" "notification of major holdings" 2025',
-    'site:investegate.co.uk "TR-1" "notification of major holdings" 2024',
-    'site:investegate.co.uk "TR1" "notification" "major holdings" 2023',
-    'site:investegate.co.uk "TR-1" "notification" "major holdings" 2022',
-    'site:investegate.co.uk "TR1" "notification" "major holdings" 2021',
-    'site:investegate.co.uk "TR1" "notification" "major holdings" 2020',
-    # FT Markets also publishes TR1s
-    'site:markets.ft.com "TR-1" "notification of major holdings"',
-    'site:markets.ft.com "TR1" "notification of major holdings" 2025 OR 2026',
-    # Direct LSE
-    '"TR-1" "notification of major holdings" investor shareholder acquired',
-    '"TR1" "major holdings" individual investor UK shares voting rights',
-    'RNS "notification of major holdings" individual shareholder name UK',
-    'RNS TR1 notification individual investor shareholder AIM listed',
-    '"notification of major holdings" individual investor UK 2025 OR 2026',
-    '"notification of major holdings" individual investor UK 2023 OR 2024',
-    '"notification of major holdings" individual investor UK 2021 OR 2022',
-    '"notification of major holdings" individual investor UK 2019 OR 2020',
-]
-
-# Max TR1 pages to fetch and analyze
-TR1_PAGE_FETCH_LIMIT = 100
-TR1_PAGE_MAX_CHARS = 10000  # TR1 forms can be long
+def _build_queries(days_back=30):
+    """Build a comprehensive set of Serper queries for TR1 announcements.
+    
+    Generates queries across:
+    - Multiple sites (Investegate, FT Markets, company websites)
+    - Different date ranges based on days_back
+    - Various TR1 title formats
+    - Specific sectors and company types
+    """
+    queries = []
+    
+    # Core TR1 search terms
+    tr1_terms = [
+        '"TR-1" "notification of major holdings"',
+        '"TR1" "notification of major holdings"',
+        '"TR-1" "notification" "major holdings"',
+        '"notification of major holdings" "voting rights"',
+        '"TR-1" notification shareholder holdings',
+        '"Holding(s) in Company" RNS',
+        '"Holdings in Company" notification',
+    ]
+    
+    # Sites to search
+    sites = [
+        "site:investegate.co.uk",
+        "site:markets.ft.com",
+        "site:londonstockexchange.com",
+        "",  # open web
+    ]
+    
+    # Generate year/date range queries based on days_back
+    today = date.today()
+    start_date = today - timedelta(days=days_back)
+    
+    # Get the years covered
+    years = set()
+    d = start_date
+    while d <= today:
+        years.add(d.year)
+        d += timedelta(days=365)
+    years.add(today.year)
+    years = sorted(years)
+    
+    # Build queries: each site × each TR1 term × each year
+    for site in sites:
+        for term in tr1_terms[:4]:  # top 4 terms per site
+            if years:
+                year_str = " OR ".join(str(y) for y in years[-2:])  # last 2 years
+                q = f"{site} {term} {year_str}".strip()
+                queries.append(q)
+            else:
+                queries.append(f"{site} {term}".strip())
+    
+    # Add month-specific queries for recent months (higher precision)
+    months = []
+    d = start_date
+    while d <= today:
+        months.append(d.strftime("%B %Y"))
+        d = d.replace(day=1) + timedelta(days=32)
+        d = d.replace(day=1)
+    
+    for month in months[-6:]:  # last 6 months
+        queries.append(f'site:investegate.co.uk "TR-1" "notification" "{month}"')
+        queries.append(f'site:investegate.co.uk "major holdings" "{month}"')
+    
+    # Individual investor focused queries
+    investor_queries = [
+        '"TR-1" individual shareholder notification UK listed',
+        '"notification of major holdings" individual investor AIM',
+        '"notification of major holdings" individual shareholder "Main Market"',
+        'RNS "notification of major holdings" person acquired shares UK',
+        '"TR-1" notification individual "acquired" OR "disposed" voting rights',
+        'investegate "TR-1" OR "TR1" individual shareholder notification',
+        '"Holding(s) in Company" individual investor RNS',
+        '"notification of major holdings" director shareholder UK',
+        '"TR-1" significant shareholder individual person UK listed company',
+    ]
+    queries.extend(investor_queries)
+    
+    # Sector-specific TR1 queries (these often name individual investors)
+    sector_queries = [
+        '"TR-1" "notification" AIM technology company shareholder',
+        '"TR-1" "notification" AIM mining resources shareholder',
+        '"TR-1" "notification" AIM biotech pharma shareholder',
+        '"TR-1" "notification" AIM oil gas energy shareholder',
+        '"TR-1" "notification" AIM property real estate shareholder',
+        '"TR-1" "notification" AIM fintech financial shareholder',
+        '"notification of major holdings" FTSE 250 individual investor',
+        '"notification of major holdings" FTSE AIM 100 shareholder',
+    ]
+    queries.extend(sector_queries)
+    
+    # Historical deep-dive queries if looking back far
+    if days_back > 90:
+        for year in range(max(2019, start_date.year), today.year):
+            queries.append(f'site:investegate.co.uk "TR-1" "notification of major holdings" {year}')
+            queries.append(f'"notification of major holdings" individual investor UK {year}')
+    
+    _tr1_log(f"Generated {len(queries)} search queries for {days_back} days back")
+    return queries
 
 
 def _fetch_page_text(url):
@@ -110,7 +175,6 @@ def _fetch_page_text(url):
             if resp.status_code != 200:
                 return ""
             soup = BeautifulSoup(resp.text, "html.parser")
-            # Remove non-content elements
             for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
                 tag.decompose()
             text = soup.get_text(separator="\n", strip=True)
@@ -123,7 +187,7 @@ def _search_serper(queries):
     """Search for TR1 announcements via Serper API."""
     serper_key = os.environ.get("SERPER_API_KEY", "")
     if not serper_key:
-        _tr1_log("SERPER_API_KEY not set. Skipping search.")
+        _tr1_log("SERPER_API_KEY not set.")
         return []
 
     results = []
@@ -158,23 +222,27 @@ def _search_serper(queries):
             _tr1_log(f"Serper error: {e}")
         time.sleep(0.3)
 
-    _tr1_log(f"Serper found {len(results)} TR1 announcement URLs")
+    _tr1_log(f"Found {len(results)} unique TR1 announcement URLs")
     return results
 
 
 def _is_tr1_url(url):
     """Check if a URL is likely a TR1 announcement page."""
     url_lower = url.lower()
-    if "investegate.co.uk" in url_lower and "announcement" in url_lower:
+    # Known good sources
+    if "investegate.co.uk" in url_lower and ("announcement" in url_lower or "rns" in url_lower):
         return True
     if "markets.ft.com" in url_lower and "announce" in url_lower:
         return True
     if "londonstockexchange.com" in url_lower and "news-article" in url_lower:
         return True
-    # Also allow generic pages that mention TR1
+    # Generic pages mentioning TR1 in the URL
     if "tr1" in url_lower or "tr-1" in url_lower:
         return True
-    if "notification" in url_lower and "major" in url_lower:
+    if "notification" in url_lower and ("major" in url_lower or "holding" in url_lower):
+        return True
+    # RNS announcement pages on company websites
+    if "rns" in url_lower and ("notification" in url_lower or "holding" in url_lower):
         return True
     return False
 
@@ -184,7 +252,7 @@ def _extract_tr1_data_with_llm(page_text, url, title):
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    prompt = f"""Analyze this TR1 (Notification of Major Holdings) announcement and extract the investor/shareholder details.
+    prompt = f"""Analyze this TR1 (Notification of Major Holdings) announcement and extract ALL persons and entities named.
 
 A TR1 form is a regulatory filing when someone acquires or disposes of a significant shareholding in a UK-listed company.
 
@@ -195,56 +263,57 @@ Page content:
 {page_text}
 
 Extract the following for each person/entity named in the notification:
-- name: Full name of the person or entity with the holding (from field 3 or field 4)
+- name: Full name of the person or entity (from field 3 or field 4)
 - issuer: Name of the company whose shares are held (from field 1a)
 - holding_pct: Percentage of voting rights held (from field 7, "Resulting situation")
 - num_shares: Number of voting rights/shares held
 - notification_date: Date of the notification (from field 6)
 - reason: Brief reason (acquisition, disposal, event changing breakdown)
+- entity_type: "Individual" for natural persons, "Organisation" for companies/funds/firms
 
 IMPORTANT:
-- Extract ALL persons and entities named in the notification — both individual persons AND corporate entities (funds, investment firms, etc.)
-- For each entry, set "entity_type" to either "Individual" or "Organisation"
-- If the notifier is a company/fund AND field 9 also names an ultimate controlling natural person, extract BOTH as separate entries
+- Extract ALL persons and entities — both individuals AND organisations
+- If field 9 names an ultimate controlling natural person, extract them as a separate Individual entry
 - If no persons or entities are identifiable, return an empty array
 
 Return ONLY a JSON array. Example:
-[{{"name": "John Smith", "issuer": "Acme PLC", "holding_pct": "5.2%", "num_shares": "1500000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Individual"}}, {{"name": "BlackRock Fund Advisors", "issuer": "Acme PLC", "holding_pct": "8.1%", "num_shares": "3200000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Organisation"}}]
+[{{"name": "John Smith", "issuer": "Acme PLC", "holding_pct": "5.2%", "num_shares": "1500000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Individual"}}, {{"name": "BlackRock Inc", "issuer": "Acme PLC", "holding_pct": "8.1%", "num_shares": "3200000", "notification_date": "2025-03-15", "reason": "Acquisition of voting rights", "entity_type": "Organisation"}}]
 
 If no persons or entities found, return: []"""
 
-    # Try Gemini first
+    providers = []
     if gemini_key:
-        try:
-            resp = httpx.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-                headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=60,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                return _parse_llm_response(text)
-            else:
-                _tr1_log(f"Gemini returned {resp.status_code}")
-        except Exception as e:
-            _tr1_log(f"Gemini error: {e}")
-
-    # Fallback to Anthropic
+        providers.append(("gemini", gemini_key))
     if anthropic_key:
+        providers.append(("anthropic", anthropic_key))
+
+    for prov_name, prov_key in providers:
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=anthropic_key)
-            msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = msg.content[0].text if msg.content else ""
-            return _parse_llm_response(text)
+            if prov_name == "gemini":
+                resp = httpx.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                    headers={"x-goog-api-key": prov_key, "Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": prompt}]}]},
+                    timeout=60,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    return _parse_llm_response(text)
+                else:
+                    _tr1_log(f"Gemini returned {resp.status_code}")
+            else:
+                import anthropic
+                client = anthropic.Anthropic(api_key=prov_key)
+                msg = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = msg.content[0].text if msg.content else ""
+                return _parse_llm_response(text)
         except Exception as e:
-            _tr1_log(f"Anthropic error: {e}")
+            _tr1_log(f"{prov_name} error: {e}")
 
     return []
 
@@ -252,14 +321,12 @@ If no persons or entities found, return: []"""
 def _parse_llm_response(text):
     """Parse JSON array from LLM response."""
     text = text.strip()
-    # Find JSON array in response
     match = re.search(r'\[.*\]', text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
-    # Try the whole text
     try:
         result = json.loads(text)
         if isinstance(result, list):
@@ -308,8 +375,12 @@ def _save_tr1_investors(investors):
 
 # ── Main scan entry point ─────────────────────────────────────────
 
-def run_tr1_scan():
-    """Execute a TR1 announcement scan. Runs in a background thread."""
+def run_tr1_scan(days_back=30):
+    """Execute a TR1 announcement scan. Runs in a background thread.
+    
+    Args:
+        days_back: How many days of history to search (7, 30, 90, 365, etc.)
+    """
     with _tr1_lock:
         if _tr1_state["running"]:
             return False
@@ -326,19 +397,20 @@ def run_tr1_scan():
             "investors_duplicate": 0,
             "error": None,
             "log": [],
+            "days_back": days_back,
         })
 
     def _run():
         try:
-            today = date.today().isoformat()
+            today_str = date.today().isoformat()
 
-            # Step 1: Search for TR1 announcements
-            _tr1_log("Searching for TR1 announcements...")
-            _tr1_update(phase="searching", phase_detail="Searching for TR1 announcements via Serper...")
-
-            results = _search_serper(SERPER_TR1_QUERIES)
+            # Step 1: Build and execute search queries
+            _tr1_log(f"Scanning TR1 announcements from last {days_back} days...")
+            queries = _build_queries(days_back)
+            
+            _tr1_update(phase="searching", phase_detail=f"Searching {len(queries)} queries for TR1 announcements...")
+            results = _search_serper(queries)
             _tr1_update(announcements_found=len(results))
-            _tr1_log(f"Found {len(results)} TR1 announcement URLs")
 
             if not results:
                 _tr1_update(
@@ -354,8 +426,8 @@ def run_tr1_scan():
             pages_fetched = 0
             consecutive_errors = 0
 
-            # Limit to top N pages
             pages_to_fetch = results[:TR1_PAGE_FETCH_LIMIT]
+            _tr1_log(f"Will analyze up to {len(pages_to_fetch)} TR1 pages")
 
             for i, result in enumerate(pages_to_fetch):
                 _tr1_update(
@@ -365,11 +437,9 @@ def run_tr1_scan():
 
                 page_text = _fetch_page_text(result["url"])
                 if not page_text or len(page_text.strip()) < 200:
-                    _tr1_log(f"Page {i+1}: too little content from {result['url'][:60]}")
                     continue
 
                 pages_fetched += 1
-                _tr1_log(f"Page {i+1}: fetched {len(page_text)} chars")
 
                 try:
                     extracted = _extract_tr1_data_with_llm(
@@ -378,14 +448,19 @@ def run_tr1_scan():
                     consecutive_errors = 0
 
                     if extracted:
-                        _tr1_log(f"Page {i+1}: found {len(extracted)} individual(s)")
+                        _tr1_log(f"Page {i+1}: found {len(extracted)} entity/entities")
                         for item in extracted:
                             entity_type = item.get("entity_type", "Individual")
+                            name = item.get("name", "").strip()
+                            issuer = item.get("issuer", "").strip()
+                            if not name or not issuer:
+                                continue
+
                             investor = {
-                                "name": item.get("name", "").strip(),
+                                "name": name,
                                 "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
                                 "company": entity_type,
-                                "eis_company": item.get("issuer", "").strip(),
+                                "eis_company": issuer,
                                 "sector": "Listed Company",
                                 "amount": f"{item.get('num_shares', 'N/A')} shares",
                                 "source_url": result["url"],
@@ -393,49 +468,39 @@ def run_tr1_scan():
                                 "source_name": "LSE TR1 Filing",
                                 "context_quote": f"TR1 notification ({entity_type}): {item.get('reason', 'Major holding')}. Holding: {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). Date: {item.get('notification_date', 'N/A')}",
                                 "linkedin_url": None,
-                                "date_found": today,
+                                "date_found": today_str,
                             }
-                            # Only add if we have a name and issuer
-                            if investor["name"] and investor["eis_company"]:
-                                all_investors.append(investor)
-                    else:
-                        _tr1_log(f"Page {i+1}: no individual investors found")
+                            all_investors.append(investor)
 
                 except Exception as e:
                     consecutive_errors += 1
-                    _tr1_log(f"Page {i+1} extraction error: {str(e)[:120]}")
+                    _tr1_log(f"Page {i+1} error: {str(e)[:120]}")
                     if consecutive_errors >= 5:
-                        _tr1_log("Aborting after 5 consecutive extraction errors.")
+                        _tr1_log("Aborting after 5 consecutive errors.")
                         break
 
-                _tr1_update(
-                    pages_fetched=pages_fetched,
-                    investors_found=len(all_investors),
-                )
+                _tr1_update(pages_fetched=pages_fetched, investors_found=len(all_investors))
                 time.sleep(0.5)
 
-            _tr1_log(f"Analyzed {pages_fetched} pages. Found {len(all_investors)} individual investors.")
+            _tr1_log(f"Analyzed {pages_fetched} pages. Found {len(all_investors)} entities.")
 
             if not all_investors:
                 _tr1_update(
                     phase="done",
-                    phase_detail=f"Analyzed {pages_fetched} TR1 announcements. No new individual investors found.",
+                    phase_detail=f"Analyzed {pages_fetched} TR1 announcements. No new entities found.",
                     running=False,
                     finished_at=datetime.now().isoformat(),
                 )
                 return
 
-            # Step 3: Save to database
-            _tr1_update(
-                phase="saving",
-                phase_detail=f"Saving {len(all_investors)} investor(s) to database...",
-            )
+            # Step 3: Save
+            _tr1_update(phase="saving", phase_detail=f"Saving {len(all_investors)} entities...")
             inserted, duplicated = _save_tr1_investors(all_investors)
             _tr1_log(f"Saved: {inserted} new, {duplicated} duplicates")
 
             _tr1_update(
                 phase="done",
-                phase_detail=f"Done. {inserted} new investor(s), {duplicated} duplicate(s). Analyzed {pages_fetched} TR1 announcements.",
+                phase_detail=f"Done. {inserted} new, {duplicated} duplicates. Analyzed {pages_fetched} TR1 pages ({days_back} day range).",
                 running=False,
                 finished_at=datetime.now().isoformat(),
                 investors_saved=inserted,

@@ -900,7 +900,8 @@ async function runTr1Scan() {
     if (btnSpan) btnSpan.textContent = "Scanning...";
     if (btnSvg) btnSvg.style.animation = "spin 1s linear infinite";
 
-    var res = await fetch(API + "/api/tr1-scan", { method: "POST" });
+    var daysBack = document.getElementById("tr1-days").value || 30;
+    var res = await fetch(API + "/api/tr1-scan?days_back=" + daysBack, { method: "POST" });
     var data = await res.json();
 
     if (data.status === "already_running") {
