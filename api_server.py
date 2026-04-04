@@ -112,6 +112,129 @@ def seed_db(db):
     print("[seed] No seed_data.json found. Database starts empty.")
 
 
+# --- Daily Auto-Scan Scheduler ---
+
+import threading
+import time as _time
+from zoneinfo import ZoneInfo
+
+_daily_scan_state = {
+    "enabled": False,
+    "last_run": None,
+    "next_run": None,
+    "status": "idle",  # idle, running_web, running_ch, running_tr1, done
+    "last_result": None,
+}
+_daily_lock = threading.Lock()
+
+
+def _get_next_8am_bst():
+    """Calculate the next 8:00 AM BST/GMT (Europe/London)."""
+    tz = ZoneInfo("Europe/London")
+    now = datetime.now(tz)
+    target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    return target
+
+
+def _run_daily_scans():
+    """Run all three scans sequentially."""
+    from scanner import run_scan, get_scan_status
+    from ch_scanner import run_ch_scan, get_ch_scan_status
+    from tr1_scanner import run_tr1_scan, get_tr1_scan_status
+
+    results = {}
+
+    # 1. Web scan
+    with _daily_lock:
+        _daily_scan_state["status"] = "running_web"
+    print("[daily] Starting web scan...")
+    run_scan()
+    while get_scan_status()["running"]:
+        _time.sleep(5)
+    web_status = get_scan_status()
+    results["web"] = web_status.get("phase_detail", "")
+    print(f"[daily] Web scan done: {results['web']}")
+    _time.sleep(5)
+
+    # 2. Companies House scan
+    with _daily_lock:
+        _daily_scan_state["status"] = "running_ch"
+    print("[daily] Starting Companies House scan...")
+    run_ch_scan()
+    while get_ch_scan_status()["running"]:
+        _time.sleep(5)
+    ch_status = get_ch_scan_status()
+    results["ch"] = ch_status.get("phase_detail", "")
+    print(f"[daily] CH scan done: {results['ch']}")
+    _time.sleep(5)
+
+    # 3. TR1 scan (7 days for daily updates)
+    with _daily_lock:
+        _daily_scan_state["status"] = "running_tr1"
+    print("[daily] Starting TR1 scan (7 days)...")
+    run_tr1_scan(days_back=7)
+    while get_tr1_scan_status()["running"]:
+        _time.sleep(5)
+    tr1_status = get_tr1_scan_status()
+    results["tr1"] = tr1_status.get("phase_detail", "")
+    print(f"[daily] TR1 scan done: {results['tr1']}")
+
+    return results
+
+
+def _daily_scheduler_loop():
+    """Background thread that checks every 60s if it's time to run."""
+    while True:
+        try:
+            with _daily_lock:
+                enabled = _daily_scan_state["enabled"]
+
+            if enabled:
+                tz = ZoneInfo("Europe/London")
+                now = datetime.now(tz)
+                next_run = _get_next_8am_bst()
+
+                with _daily_lock:
+                    _daily_scan_state["next_run"] = next_run.isoformat()
+
+                # Check if we should run now (within 2 minutes of target)
+                target_today = now.replace(hour=8, minute=0, second=0, microsecond=0)
+                diff = (now - target_today).total_seconds()
+                last_run = _daily_scan_state.get("last_run", "")
+                already_ran_today = last_run and last_run[:10] == now.strftime("%Y-%m-%d")
+
+                if 0 <= diff < 120 and not already_ran_today:
+                    print(f"[daily] Triggering daily scan at {now.isoformat()}")
+                    with _daily_lock:
+                        _daily_scan_state["status"] = "running_web"
+                        _daily_scan_state["last_run"] = now.isoformat()
+
+                    try:
+                        results = _run_daily_scans()
+                        with _daily_lock:
+                            _daily_scan_state["status"] = "done"
+                            _daily_scan_state["last_result"] = results
+                            _daily_scan_state["next_run"] = _get_next_8am_bst().isoformat()
+                        print(f"[daily] All scans complete: {results}")
+                    except Exception as e:
+                        print(f"[daily] Scan error: {e}")
+                        with _daily_lock:
+                            _daily_scan_state["status"] = f"error: {e}"
+
+        except Exception as e:
+            print(f"[daily] Scheduler error: {e}")
+
+        _time.sleep(60)  # check every minute
+
+
+# Start the scheduler thread
+_scheduler_thread = threading.Thread(target=_daily_scheduler_loop, daemon=True)
+_scheduler_thread.start()
+print("[startup] Daily scan scheduler thread started")
+
+
 # --- App setup ---
 
 print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
@@ -382,6 +505,32 @@ def trigger_tr1_scan(days_back: int = Query(30, ge=1, le=3650)):
 def tr1_scan_status():
     from tr1_scanner import get_tr1_scan_status
     return get_tr1_scan_status()
+
+
+# --- Daily Update Endpoints ---
+
+@app.get("/api/daily/status")
+def daily_status():
+    with _daily_lock:
+        return dict(_daily_scan_state)
+
+
+@app.post("/api/daily/enable")
+def daily_enable():
+    with _daily_lock:
+        _daily_scan_state["enabled"] = True
+        _daily_scan_state["next_run"] = _get_next_8am_bst().isoformat()
+    print("[daily] Auto-scan ENABLED")
+    return {"status": "enabled", "next_run": _daily_scan_state["next_run"]}
+
+
+@app.post("/api/daily/disable")
+def daily_disable():
+    with _daily_lock:
+        _daily_scan_state["enabled"] = False
+        _daily_scan_state["next_run"] = None
+    print("[daily] Auto-scan DISABLED")
+    return {"status": "disabled"}
 
 
 # Keep legacy endpoint for backward compatibility

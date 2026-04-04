@@ -844,6 +844,57 @@ function resetChButton() {
   if (btnSvg) btnSvg.style.animation = "";
 }
 
+/* ─── Daily Update Toggle ─── */
+var dailyBtn = document.getElementById("daily-toggle-btn");
+var dailyEnabled = false;
+
+async function fetchDailyStatus() {
+  try {
+    var res = await fetch(API + "/api/daily/status");
+    var data = await res.json();
+    dailyEnabled = data.enabled;
+    updateDailyButton();
+    if (data.enabled && data.status && data.status.startsWith("running")) {
+      updateStatusBar({ running: true, phase: "extracting", phase_detail: "Daily auto-scan: " + data.status.replace("running_", "") + " scan in progress..." });
+    }
+  } catch (e) {}
+}
+
+function updateDailyButton() {
+  if (!dailyBtn) return;
+  var span = dailyBtn.querySelector("span");
+  if (dailyEnabled) {
+    if (span) span.textContent = "Daily On";
+    dailyBtn.classList.add("btn-primary");
+    dailyBtn.title = "Daily auto-scan enabled (8am BST). Click to disable.";
+  } else {
+    if (span) span.textContent = "Daily Off";
+    dailyBtn.classList.remove("btn-primary");
+    dailyBtn.title = "Enable daily auto-scan at 8am BST";
+  }
+}
+
+if (dailyBtn) {
+  dailyBtn.addEventListener("click", async function () {
+    try {
+      var endpoint = dailyEnabled ? "/api/daily/disable" : "/api/daily/enable";
+      var res = await fetch(API + endpoint, { method: "POST" });
+      var data = await res.json();
+      dailyEnabled = data.status === "enabled";
+      updateDailyButton();
+      if (dailyEnabled) {
+        showToast("Daily auto-scan enabled. Next run: 8:00 AM BST", 5000);
+      } else {
+        showToast("Daily auto-scan disabled.", 3000);
+      }
+    } catch (err) {
+      showToast("Failed to toggle daily scan.", 3000);
+    }
+  });
+}
+
+fetchDailyStatus();
+
 /* ─── Excel Import ─── */
 var importFileInput = document.getElementById("import-file-input");
 var importBtn = document.getElementById("import-btn");
