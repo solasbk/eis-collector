@@ -57,110 +57,102 @@ def _tr1_log(msg):
 
 
 # ── Page limits ───────────────────────────────────────────────────
-TR1_PAGE_FETCH_LIMIT = 150
+TR1_PAGE_FETCH_LIMIT = 250
 TR1_PAGE_MAX_CHARS = 10000
 
 
 def _build_queries(days_back=30):
     """Build a comprehensive set of Serper queries for TR1 announcements.
     
-    Generates queries across:
-    - Multiple sites (Investegate, FT Markets, company websites)
-    - Different date ranges based on days_back
-    - Various TR1 title formats
-    - Specific sectors and company types
+    For 5-year lookback, generates ~200 queries covering every year,
+    every quarter, multiple sites, and various TR1 title formats.
     """
     queries = []
-    
-    # Core TR1 search terms
-    tr1_terms = [
-        '"TR-1" "notification of major holdings"',
-        '"TR1" "notification of major holdings"',
-        '"TR-1" "notification" "major holdings"',
-        '"notification of major holdings" "voting rights"',
-        '"TR-1" notification shareholder holdings',
-        '"Holding(s) in Company" RNS',
-        '"Holdings in Company" notification',
-    ]
-    
-    # Sites to search
-    sites = [
-        "site:investegate.co.uk",
-        "site:markets.ft.com",
-        "site:londonstockexchange.com",
-        "",  # open web
-    ]
-    
-    # Generate year/date range queries based on days_back
     today = date.today()
     start_date = today - timedelta(days=days_back)
     
-    # Get the years covered
-    years = set()
-    d = start_date
-    while d <= today:
-        years.add(d.year)
-        d += timedelta(days=365)
-    years.add(today.year)
-    years = sorted(years)
+    # Get all years in range
+    years = sorted(set(
+        [start_date.year + i for i in range(today.year - start_date.year + 1)]
+    ))
     
-    # Build queries: each site × each TR1 term × each year
-    for site in sites:
-        for term in tr1_terms[:4]:  # top 4 terms per site
-            if years:
-                year_str = " OR ".join(str(y) for y in years[-2:])  # last 2 years
-                q = f"{site} {term} {year_str}".strip()
-                queries.append(q)
-            else:
-                queries.append(f"{site} {term}".strip())
+    # ── Per-year queries on Investegate (highest yield source) ─────
+    for year in years:
+        queries.append(f'site:investegate.co.uk "TR-1" "notification of major holdings" {year}')
+        queries.append(f'site:investegate.co.uk "TR1" "notification of major holdings" {year}')
+        queries.append(f'site:investegate.co.uk "notification of major holdings" "voting rights" {year}')
+        queries.append(f'site:investegate.co.uk "Holding(s) in Company" {year}')
     
-    # Add month-specific queries for recent months (higher precision)
-    months = []
-    d = start_date
-    while d <= today:
-        months.append(d.strftime("%B %Y"))
-        d = d.replace(day=1) + timedelta(days=32)
-        d = d.replace(day=1)
+    # ── Per-year on FT Markets ────────────────────────────────────
+    for year in years:
+        queries.append(f'site:markets.ft.com "TR-1" "notification of major holdings" {year}')
+        queries.append(f'site:markets.ft.com "notification of major holdings" {year}')
     
-    for month in months[-6:]:  # last 6 months
-        queries.append(f'site:investegate.co.uk "TR-1" "notification" "{month}"')
-        queries.append(f'site:investegate.co.uk "major holdings" "{month}"')
+    # ── Per-year on open web ──────────────────────────────────────
+    for year in years:
+        queries.append(f'"TR-1" "notification of major holdings" {year} RNS')
+        queries.append(f'"notification of major holdings" individual shareholder {year} UK')
+        queries.append(f'"notification of major holdings" "acquired" OR "disposed" {year}')
     
-    # Individual investor focused queries
-    investor_queries = [
+    # ── Per-half-year queries for more granularity ────────────────
+    for year in years:
+        queries.append(f'site:investegate.co.uk "TR-1" notification holdings January OR February OR March OR April OR May OR June {year}')
+        queries.append(f'site:investegate.co.uk "TR-1" notification holdings July OR August OR September OR October OR November OR December {year}')
+    
+    # ── Alphabet sweep on Investegate (different company names) ───
+    # Search results differ based on company name starting letter
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        queries.append(f'site:investegate.co.uk "TR-1" "notification of major holdings" "{letter}"')
+    
+    # ── Individual investor focused queries ───────────────────────
+    individual_terms = [
         '"TR-1" individual shareholder notification UK listed',
         '"notification of major holdings" individual investor AIM',
-        '"notification of major holdings" individual shareholder "Main Market"',
-        'RNS "notification of major holdings" person acquired shares UK',
-        '"TR-1" notification individual "acquired" OR "disposed" voting rights',
-        'investegate "TR-1" OR "TR1" individual shareholder notification',
-        '"Holding(s) in Company" individual investor RNS',
+        '"notification of major holdings" individual person shareholder',
         '"notification of major holdings" director shareholder UK',
-        '"TR-1" significant shareholder individual person UK listed company',
+        '"TR-1" significant shareholder individual person UK',
+        '"notification of major holdings" "natural person" UK',
+        '"notification of major holdings" "ultimate controlling" person',
+        'RNS "notification of major holdings" person acquired shares UK',
+        '"TR-1" notification individual "acquired" voting rights',
+        '"TR-1" notification individual "disposed" voting rights',
     ]
-    queries.extend(investor_queries)
+    queries.extend(individual_terms)
     
-    # Sector-specific TR1 queries (these often name individual investors)
-    sector_queries = [
-        '"TR-1" "notification" AIM technology company shareholder',
-        '"TR-1" "notification" AIM mining resources shareholder',
-        '"TR-1" "notification" AIM biotech pharma shareholder',
-        '"TR-1" "notification" AIM oil gas energy shareholder',
-        '"TR-1" "notification" AIM property real estate shareholder',
-        '"TR-1" "notification" AIM fintech financial shareholder',
-        '"notification of major holdings" FTSE 250 individual investor',
-        '"notification of major holdings" FTSE AIM 100 shareholder',
+    # ── Per-year individual investor queries ──────────────────────
+    for year in years:
+        queries.append(f'"notification of major holdings" individual investor UK {year}')
+        queries.append(f'"TR-1" individual shareholder acquired {year}')
+    
+    # ── AIM sector queries (AIM companies have more individual investors) ──
+    aim_sectors = [
+        'technology', 'mining', 'oil gas energy', 'biotech pharma',
+        'property', 'financial', 'media', 'healthcare', 'cannabis',
+        'renewable energy', 'retail', 'industrial', 'travel leisure',
     ]
-    queries.extend(sector_queries)
+    for sector in aim_sectors:
+        queries.append(f'"notification of major holdings" AIM {sector} shareholder')
     
-    # Historical deep-dive queries if looking back far
-    if days_back > 90:
-        for year in range(max(2019, start_date.year), today.year):
-            queries.append(f'site:investegate.co.uk "TR-1" "notification of major holdings" {year}')
-            queries.append(f'"notification of major holdings" individual investor UK {year}')
+    # ── LSE direct queries ────────────────────────────────────────
+    queries.append('site:londonstockexchange.com "notification of major holdings" individual')
+    queries.append('site:londonstockexchange.com "TR-1" shareholder notification')
     
-    _tr1_log(f"Generated {len(queries)} search queries for {days_back} days back")
-    return queries
+    # ── Alternative RNS aggregators ───────────────────────────────
+    queries.append('site:sharecast.com "TR-1" "notification of major holdings"')
+    queries.append('site:morningstar.co.uk "TR-1" "notification" "major holdings"')
+    queries.append('site:lse.co.uk "TR-1" notification holdings')  # forum discussions with links
+    queries.append('site:proactiveinvestors.co.uk "TR-1" notification shareholder')
+    
+    # Deduplicate
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            unique_queries.append(q)
+    
+    _tr1_log(f"Generated {len(unique_queries)} search queries for {days_back} days back ({len(years)} years)")
+    return unique_queries
 
 
 def _fetch_page_text(url):
@@ -184,7 +176,7 @@ def _fetch_page_text(url):
 
 
 def _search_serper(queries):
-    """Search for TR1 announcements via Serper API."""
+    """Search for TR1 announcements via Serper API with pagination."""
     serper_key = os.environ.get("SERPER_API_KEY", "")
     if not serper_key:
         _tr1_log("SERPER_API_KEY not set.")
@@ -192,11 +184,14 @@ def _search_serper(queries):
 
     results = []
     seen_urls = set()
+    api_calls = 0
 
     for i, query in enumerate(queries):
         _tr1_update(
-            phase_detail=f"Searching for TR1 announcements ({i+1}/{len(queries)})..."
+            phase_detail=f"Searching ({i+1}/{len(queries)}): {len(results)} URLs found so far..."
         )
+        
+        # Fetch page 1 (results 1-20)
         try:
             resp = httpx.post(
                 "https://google.serper.dev/search",
@@ -204,8 +199,10 @@ def _search_serper(queries):
                 json={"q": query, "num": 20},
                 timeout=10,
             )
+            api_calls += 1
             if resp.status_code == 200:
                 data = resp.json()
+                new_this_query = 0
                 for item in data.get("organic", []):
                     url = item.get("link", "")
                     if url not in seen_urls and _is_tr1_url(url):
@@ -215,14 +212,38 @@ def _search_serper(queries):
                             "url": url,
                             "snippet": item.get("snippet", ""),
                         })
+                        new_this_query += 1
+                
+                # If we got many results, fetch page 2 for this query
+                if new_this_query >= 10:
+                    time.sleep(0.3)
+                    resp2 = httpx.post(
+                        "https://google.serper.dev/search",
+                        headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+                        json={"q": query, "num": 20, "page": 2},
+                        timeout=10,
+                    )
+                    api_calls += 1
+                    if resp2.status_code == 200:
+                        data2 = resp2.json()
+                        for item in data2.get("organic", []):
+                            url = item.get("link", "")
+                            if url not in seen_urls and _is_tr1_url(url):
+                                seen_urls.add(url)
+                                results.append({
+                                    "title": item.get("title", ""),
+                                    "url": url,
+                                    "snippet": item.get("snippet", ""),
+                                })
+
             elif resp.status_code == 429:
-                _tr1_log("Serper rate limited. Waiting 30s...")
+                _tr1_log(f"Serper rate limited after {api_calls} calls. Waiting 30s...")
                 time.sleep(30)
         except Exception as e:
             _tr1_log(f"Serper error: {e}")
         time.sleep(0.3)
 
-    _tr1_log(f"Found {len(results)} unique TR1 announcement URLs")
+    _tr1_log(f"Found {len(results)} unique TR1 URLs from {api_calls} Serper API calls")
     return results
 
 
