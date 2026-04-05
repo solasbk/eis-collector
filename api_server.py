@@ -339,13 +339,13 @@ def list_investors(
     elif entity_type == "organisation":
         conditions.append("company = 'Organisation'")
 
-    if holding == "25plus":
+    if holding == "under50":
         conditions.append("""
             (context_quote ILIKE '%%25-to-50%%'
-             OR context_quote ILIKE '%%50-to-75%%'
-             OR context_quote ILIKE '%%75-to-100%%'
-             OR context_quote ILIKE '%%over-75%%'
-             OR role ILIKE '%%PSC%%')
+             OR (role ILIKE '%%PSC%%' 
+                 AND context_quote NOT ILIKE '%%50-to-75%%'
+                 AND context_quote NOT ILIKE '%%75-to-100%%'
+                 AND context_quote NOT ILIKE '%%over-75%%'))
         """)
     elif holding == "50plus":
         conditions.append("""
