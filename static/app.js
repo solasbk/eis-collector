@@ -844,6 +844,80 @@ function resetChButton() {
   if (btnSvg) btnSvg.style.animation = "";
 }
 
+/* ─── TR1 Sweep ─── */
+var runSweepBtn = document.getElementById("run-sweep-btn");
+let sweepPollingInterval = null;
+
+if (runSweepBtn) {
+  runSweepBtn.addEventListener("click", async function () {
+    try {
+      runSweepBtn.disabled = true;
+      var sp = runSweepBtn.querySelector("span");
+      var sv = runSweepBtn.querySelector("svg");
+      if (sp) sp.textContent = "Sweeping...";
+      if (sv) sv.style.animation = "spin 1s linear infinite";
+
+      var res = await fetch(API + "/api/tr1-sweep", { method: "POST" });
+      var data = await res.json();
+
+      if (data.status === "already_running") {
+        showToast("TR1 sweep already running.");
+        startSweepPolling();
+        return;
+      }
+      if (data.status === "started") {
+        showToast("TR1 company sweep started (200 companies per batch)...", 5000);
+        updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting TR1 company sweep..." });
+        startSweepPolling();
+      } else {
+        showToast(data.message || "Failed to start sweep.");
+        resetSweepButton();
+      }
+    } catch (err) {
+      showToast("Failed to start TR1 sweep.");
+      resetSweepButton();
+    }
+  });
+}
+
+function startSweepPolling() {
+  if (sweepPollingInterval) clearInterval(sweepPollingInterval);
+  sweepPollingInterval = setInterval(pollSweepStatus, 3000);
+}
+
+async function pollSweepStatus() {
+  try {
+    var res = await fetch(API + "/api/tr1-sweep/status");
+    var status = await res.json();
+    updateStatusBar(status);
+
+    if (!status.running) {
+      clearInterval(sweepPollingInterval);
+      sweepPollingInterval = null;
+      resetSweepButton();
+      if (status.phase === "done") {
+        showToast(status.phase_detail || "TR1 sweep batch complete.", 8000);
+        showScanLog(status);
+        fetchStats();
+        fetchInvestors();
+        updateExportNewBadge();
+      } else if (status.phase === "error") {
+        showToast("Sweep error: " + (status.error || "Unknown"), 5000);
+        showScanLog(status);
+      }
+    }
+  } catch (err) {}
+}
+
+function resetSweepButton() {
+  if (!runSweepBtn) return;
+  runSweepBtn.disabled = false;
+  var sp = runSweepBtn.querySelector("span");
+  var sv = runSweepBtn.querySelector("svg");
+  if (sp) sp.textContent = "TR1 Sweep";
+  if (sv) sv.style.animation = "";
+}
+
 /* ─── Daily Update Toggle ─── */
 var dailyBtn = document.getElementById("daily-toggle-btn");
 var dailyEnabled = false;

@@ -180,6 +180,19 @@ def _run_daily_scans():
     tr1_status = get_tr1_scan_status()
     results["tr1"] = tr1_status.get("phase_detail", "")
     print(f"[daily] TR1 scan done: {results['tr1']}")
+    _time.sleep(5)
+
+    # 4. TR1 Sweep (200 companies per batch)
+    from tr1_sweep import run_tr1_sweep, get_sweep_status
+    with _daily_lock:
+        _daily_scan_state["status"] = "running_sweep"
+    print("[daily] Starting TR1 company sweep...")
+    run_tr1_sweep()
+    while get_sweep_status()["running"]:
+        _time.sleep(5)
+    sweep_status = get_sweep_status()
+    results["sweep"] = sweep_status.get("phase_detail", "")
+    print(f"[daily] TR1 sweep done: {results['sweep']}")
 
     return results
 
@@ -505,6 +518,26 @@ def trigger_tr1_scan(days_back: int = Query(30, ge=1, le=3650)):
 def tr1_scan_status():
     from tr1_scanner import get_tr1_scan_status
     return get_tr1_scan_status()
+
+
+# --- TR1 Sweep Endpoints ---
+
+@app.post("/api/tr1-sweep")
+def trigger_tr1_sweep():
+    from tr1_sweep import run_tr1_sweep, get_sweep_status
+    status = get_sweep_status()
+    if status["running"]:
+        return {"status": "already_running", "message": "TR1 sweep already in progress."}
+    started = run_tr1_sweep()
+    if started:
+        return {"status": "started", "message": "TR1 company sweep started."}
+    return {"status": "error", "message": "Failed to start TR1 sweep."}
+
+
+@app.get("/api/tr1-sweep/status")
+def tr1_sweep_status():
+    from tr1_sweep import get_sweep_status
+    return get_sweep_status()
 
 
 # --- Daily Update Endpoints ---
