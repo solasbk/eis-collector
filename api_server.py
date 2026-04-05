@@ -330,6 +330,7 @@ def list_investors(
     search: Optional[str] = Query(None),
     origin: Optional[str] = Query(None),
     entity_type: Optional[str] = Query(None),
+    holding: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None),
     source_name: Optional[str] = Query(None),
     sector: Optional[str] = Query(None),
@@ -362,6 +363,21 @@ def list_investors(
         conditions.append("(company != 'Organisation' OR company IS NULL)")
     elif entity_type == "organisation":
         conditions.append("company = 'Organisation'")
+
+    if holding == "25plus":
+        conditions.append("""
+            (context_quote ILIKE '%%25-to-50%%'
+             OR context_quote ILIKE '%%50-to-75%%'
+             OR context_quote ILIKE '%%75-to-100%%'
+             OR context_quote ILIKE '%%over-75%%'
+             OR role ILIKE '%%PSC%%')
+        """)
+    elif holding == "50plus":
+        conditions.append("""
+            (context_quote ILIKE '%%50-to-75%%'
+             OR context_quote ILIKE '%%75-to-100%%'
+             OR context_quote ILIKE '%%over-75%%')
+        """)
 
 
     if source_type:
