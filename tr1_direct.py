@@ -1,0 +1,475 @@
+"""tr1_direct.py -- Direct Investegate sequential scanner for TR1 filings.
+
+Scans Investegate announcement IDs sequentially, checking each title
+to find TR1 (Notification of Major Holdings) filings. This guarantees
+complete coverage — every single TR1 filing on Investegate is found.
+
+Progress is stored in the database so scans resume where they left off.
+Default batch: 5,000 IDs per run (~1,000 TR1 pages to analyze).
+"""
+
+import json
+import os
+import re
+import threading
+import time
+from datetime import datetime, date
+
+import httpx
+from bs4 import BeautifulSoup
+
+# ── Config ────────────────────────────────────────────────────────
+BATCH_SIZE = 5000          # IDs to scan per run
+MAX_TR1_EXTRACT = 200      # max TR1 pages to extract per run (Gemini cost control)
+PAGE_MAX_CHARS = 10000
+INVESTEGATE_BASE = "https://www.investegate.co.uk/announcement/rns/x/x"
+
+# Starting ID: ~September 2020 (5 years of data)
+DEFAULT_START_ID = 6000000
+# Approximate current max
+APPROX_MAX_ID = 8600000
+
+# Title keywords that indicate a TR1 / major holdings filing
+TR1_KEYWORDS = [
+    "notification of major holdings",
+    "holding(s) in company",
+    "holdings in company",
+    "tr-1",
+    "tr1 ",
+    "tr1:",
+    "major holdings",
+]
+
+# Exclude these — they look similar but aren't TR1 filings
+EXCLUDE_KEYWORDS = [
+    "director/pdmr",
+    "pdmr dealing",
+    "director dealing",
+]
+
+# ── Scan state ────────────────────────────────────────────────────
+_direct_lock = threading.Lock()
+_direct_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "phase": "idle",
+    "phase_detail": "",
+    "ids_scanned": 0,
+    "tr1_found": 0,
+    "tr1_extracted": 0,
+    "investors_found": 0,
+    "investors_saved": 0,
+    "investors_duplicate": 0,
+    "current_id": 0,
+    "progress_pct": 0,
+    "error": None,
+    "log": [],
+}
+
+
+def get_direct_status():
+    with _direct_lock:
+        return dict(_direct_state)
+
+
+def _direct_update(**kwargs):
+    with _direct_lock:
+        _direct_state.update(kwargs)
+
+
+def _direct_log(msg):
+    with _direct_lock:
+        _direct_state["log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        if len(_direct_state["log"]) > 200:
+            _direct_state["log"] = _direct_state["log"][-200:]
+    print(f"[tr1_direct] {msg}")
+
+
+# ── Database: progress tracking ───────────────────────────────────
+
+def _init_direct_table():
+    """Create the progress tracking table."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tr1_direct_progress (
+            id SERIAL PRIMARY KEY,
+            key TEXT NOT NULL UNIQUE,
+            value TEXT NOT NULL
+        )
+    """)
+    db.commit()
+    cur.close()
+    db.close()
+
+
+def _get_last_scanned_id():
+    """Get the last scanned Investegate ID."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT value FROM tr1_direct_progress WHERE key = 'last_scanned_id'")
+    row = cur.fetchone()
+    cur.close()
+    db.close()
+    if row:
+        return int(row["value"])
+    return DEFAULT_START_ID
+
+
+def _set_last_scanned_id(id_num):
+    """Save the last scanned ID."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        INSERT INTO tr1_direct_progress (key, value)
+        VALUES ('last_scanned_id', %s)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    """, (str(id_num),))
+    db.commit()
+    cur.close()
+    db.close()
+
+
+# ── ID scanning ───────────────────────────────────────────────────
+
+def _check_title(id_num, client):
+    """Fetch just enough of a page to extract the title. Returns (is_tr1, title)."""
+    try:
+        url = f"{INVESTEGATE_BASE}/{id_num}"
+        with client.stream("GET", url, follow_redirects=True) as resp:
+            if resp.status_code != 200:
+                return False, ""
+            chunk = b""
+            for c in resp.iter_bytes(3072):
+                chunk += c
+                if b"</title>" in chunk:
+                    break
+            text = chunk.decode("utf-8", errors="ignore")
+            start = text.find("<title>")
+            end = text.find("</title>")
+            if start >= 0 and end >= 0:
+                title = text[start + 7:end].strip().lower()
+                # Check for exclusions first
+                if any(kw in title for kw in EXCLUDE_KEYWORDS):
+                    return False, title
+                # Check for TR1 keywords
+                if any(kw in title for kw in TR1_KEYWORDS):
+                    return True, title
+            return False, ""
+    except Exception:
+        return False, ""
+
+
+def _fetch_full_page(id_num):
+    """Fetch the full page content for extraction."""
+    try:
+        url = f"{INVESTEGATE_BASE}/{id_num}"
+        resp = httpx.get(url, timeout=15, follow_redirects=True)
+        if resp.status_code != 200:
+            return "", ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        title = soup.find("title")
+        title_text = title.text.strip() if title else ""
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        return title_text, text[:PAGE_MAX_CHARS]
+    except Exception:
+        return "", ""
+
+
+# ── LLM extraction ────────────────────────────────────────────────
+
+def _extract_with_llm(page_text, url, title):
+    """Extract investor data from TR1 text using Gemini/Anthropic."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    prompt = f"""Analyze this TR1 (Notification of Major Holdings) announcement and extract ALL persons and entities.
+
+Page title: {title}
+Page URL: {url}
+
+Page content:
+{page_text}
+
+Extract for each person/entity:
+- name: Full name
+- issuer: Company whose shares are held
+- holding_pct: Percentage of voting rights
+- num_shares: Number of shares
+- notification_date: Date of notification
+- reason: Brief reason (acquisition, disposal, etc.)
+- entity_type: "Individual" or "Organisation"
+
+Extract both individuals AND organisations. If field 9 names an ultimate controlling person, extract them too.
+
+Return ONLY a JSON array. If nothing found, return: []"""
+
+    providers = []
+    if gemini_key:
+        providers.append(("gemini", gemini_key))
+    if anthropic_key:
+        providers.append(("anthropic", anthropic_key))
+
+    for prov_name, prov_key in providers:
+        try:
+            if prov_name == "gemini":
+                resp = httpx.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                    headers={"x-goog-api-key": prov_key, "Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": prompt}]}]},
+                    timeout=60,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    return _parse_response(text)
+                else:
+                    _direct_log(f"Gemini {resp.status_code}")
+            else:
+                import anthropic
+                client = anthropic.Anthropic(api_key=prov_key)
+                msg = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = msg.content[0].text if msg.content else ""
+                return _parse_response(text)
+        except Exception as e:
+            _direct_log(f"{prov_name} error: {e}")
+    return []
+
+
+def _parse_response(text):
+    text = text.strip()
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    try:
+        result = json.loads(text)
+        if isinstance(result, list):
+            return result
+    except json.JSONDecodeError:
+        pass
+    return []
+
+
+def _save_investors(investors):
+    """Save investors to the database."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    inserted = 0
+    duplicated = 0
+
+    for inv in investors:
+        cur.execute(
+            "SELECT id FROM investors WHERE name = %s AND eis_company = %s",
+            (inv.get("name", ""), inv.get("eis_company", ""))
+        )
+        if cur.fetchone():
+            duplicated += 1
+        else:
+            cur.execute("""
+                INSERT INTO investors (name, role, company, eis_company, sector, amount,
+                source_url, source_type, source_name, context_quote, linkedin_url, date_found)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                inv.get("name"), inv.get("role"), inv.get("company"),
+                inv.get("eis_company"), inv.get("sector"), inv.get("amount"),
+                inv.get("source_url"), inv.get("source_type"), inv.get("source_name"),
+                inv.get("context_quote"), inv.get("linkedin_url"), inv.get("date_found"),
+            ))
+            inserted += 1
+
+    db.commit()
+    cur.close()
+    db.close()
+    return inserted, duplicated
+
+
+# ── Main entry point ──────────────────────────────────────────────
+
+def run_tr1_direct():
+    """Run a batch of the direct Investegate sequential scan."""
+    with _direct_lock:
+        if _direct_state["running"]:
+            return False
+        _direct_state.update({
+            "running": True,
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "phase": "scanning",
+            "phase_detail": "Starting Investegate direct scan...",
+            "ids_scanned": 0,
+            "tr1_found": 0,
+            "tr1_extracted": 0,
+            "investors_found": 0,
+            "investors_saved": 0,
+            "investors_duplicate": 0,
+            "current_id": 0,
+            "progress_pct": 0,
+            "error": None,
+            "log": [],
+        })
+
+    def _run():
+        try:
+            _init_direct_table()
+            
+            start_id = _get_last_scanned_id()
+            end_id = min(start_id + BATCH_SIZE, APPROX_MAX_ID + 100000)
+            
+            # If we've reached the end, loop back to start
+            if start_id >= APPROX_MAX_ID:
+                start_id = DEFAULT_START_ID
+                end_id = start_id + BATCH_SIZE
+                _direct_log("Reached end of range. Restarting from beginning.")
+            
+            total_range = APPROX_MAX_ID - DEFAULT_START_ID
+            progress_pct = int(((start_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
+            
+            _direct_log(f"Scanning IDs {start_id} to {end_id} ({progress_pct}% through full range)")
+            _direct_update(current_id=start_id, progress_pct=progress_pct)
+            
+            today_str = date.today().isoformat()
+            tr1_ids = []
+            ids_checked = 0
+            
+            # Phase 1: Fast title scan to find TR1 filings
+            _direct_update(phase="scanning", phase_detail=f"Scanning titles {start_id}-{end_id}...")
+            
+            with httpx.Client(timeout=5) as client:
+                for id_num in range(start_id, end_id):
+                    is_tr1, title = _check_title(id_num, client)
+                    ids_checked += 1
+                    
+                    if is_tr1:
+                        tr1_ids.append(id_num)
+                    
+                    if ids_checked % 500 == 0:
+                        _direct_update(
+                            phase_detail=f"Scanning titles: {ids_checked}/{BATCH_SIZE} checked, {len(tr1_ids)} TR1 found...",
+                            ids_scanned=ids_checked,
+                            tr1_found=len(tr1_ids),
+                            current_id=id_num,
+                        )
+                    
+                    # Small delay to be respectful
+                    if ids_checked % 50 == 0:
+                        time.sleep(0.1)
+            
+            _direct_log(f"Title scan complete: {ids_checked} IDs checked, {len(tr1_ids)} TR1 filings found")
+            
+            if not tr1_ids:
+                _set_last_scanned_id(end_id)
+                _direct_update(
+                    phase="done",
+                    phase_detail=f"Scanned {ids_checked} IDs. No TR1 filings in this range. {progress_pct}% complete.",
+                    running=False, finished_at=datetime.now().isoformat(),
+                    ids_scanned=ids_checked,
+                )
+                return
+            
+            # Phase 2: Extract investor data from TR1 pages
+            pages_to_extract = tr1_ids[:MAX_TR1_EXTRACT]
+            _direct_log(f"Extracting data from {len(pages_to_extract)} TR1 pages...")
+            
+            total_inserted = 0
+            total_duplicated = 0
+            total_found = 0
+            consecutive_errors = 0
+            
+            for i, id_num in enumerate(pages_to_extract):
+                url = f"{INVESTEGATE_BASE}/{id_num}"
+                _direct_update(
+                    phase="extracting",
+                    phase_detail=f"Extracting TR1 ({i+1}/{len(pages_to_extract)}): ID {id_num}...",
+                    tr1_extracted=i + 1,
+                )
+                
+                title, page_text = _fetch_full_page(id_num)
+                if not page_text or len(page_text.strip()) < 200:
+                    continue
+                
+                try:
+                    extracted = _extract_with_llm(page_text, url, title)
+                    consecutive_errors = 0
+                    
+                    if extracted:
+                        investors = []
+                        for item in extracted:
+                            entity_type = item.get("entity_type", "Individual")
+                            name = item.get("name", "").strip()
+                            issuer = item.get("issuer", "").strip()
+                            if not name or not issuer:
+                                continue
+                            investors.append({
+                                "name": name,
+                                "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
+                                "company": entity_type,
+                                "eis_company": issuer,
+                                "sector": "Listed Company",
+                                "amount": f"{item.get('num_shares', 'N/A')} shares",
+                                "source_url": url,
+                                "source_type": "Filing",
+                                "source_name": "LSE TR1 Filing",
+                                "context_quote": f"TR1 direct ({entity_type}): {item.get('reason', 'Major holding')}. {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). {item.get('notification_date', '')}",
+                                "linkedin_url": None,
+                                "date_found": today_str,
+                            })
+                        
+                        if investors:
+                            ins, dup = _save_investors(investors)
+                            total_inserted += ins
+                            total_duplicated += dup
+                            total_found += len(investors)
+                    
+                except Exception as e:
+                    consecutive_errors += 1
+                    _direct_log(f"Extract error ID {id_num}: {str(e)[:100]}")
+                    if consecutive_errors >= 5:
+                        _direct_log("Aborting extraction after 5 consecutive errors.")
+                        break
+                
+                _direct_update(
+                    investors_found=total_found,
+                    investors_saved=total_inserted,
+                    investors_duplicate=total_duplicated,
+                )
+                time.sleep(0.5)
+            
+            # Save progress
+            _set_last_scanned_id(end_id)
+            
+            progress_pct = int(((end_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
+            _direct_log(f"Batch complete. {total_inserted} new, {total_duplicated} dupes. {progress_pct}% through full range.")
+            
+            _direct_update(
+                phase="done",
+                phase_detail=f"Done: {total_inserted} new investors from {len(pages_to_extract)} TR1 filings. Scanned IDs {start_id}-{end_id} ({progress_pct}% of full range).",
+                running=False,
+                finished_at=datetime.now().isoformat(),
+                ids_scanned=ids_checked,
+                progress_pct=progress_pct,
+            )
+            
+        except Exception as e:
+            _direct_log(f"Scan error: {e}")
+            _direct_update(
+                phase="error", phase_detail=str(e), error=str(e),
+                running=False, finished_at=datetime.now().isoformat(),
+            )
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return True

@@ -844,6 +844,80 @@ function resetChButton() {
   if (btnSvg) btnSvg.style.animation = "";
 }
 
+/* ─── TR1 Direct (Investegate Sequential) ─── */
+var runDirectBtn = document.getElementById("run-direct-btn");
+let directPollingInterval = null;
+
+if (runDirectBtn) {
+  runDirectBtn.addEventListener("click", async function () {
+    try {
+      runDirectBtn.disabled = true;
+      var sp = runDirectBtn.querySelector("span");
+      var sv = runDirectBtn.querySelector("svg");
+      if (sp) sp.textContent = "Scanning...";
+      if (sv) sv.style.animation = "spin 1s linear infinite";
+
+      var res = await fetch(API + "/api/tr1-direct", { method: "POST" });
+      var data = await res.json();
+
+      if (data.status === "already_running") {
+        showToast("TR1 direct scan already running.");
+        startDirectPolling();
+        return;
+      }
+      if (data.status === "started") {
+        showToast("TR1 direct Investegate scan started...", 5000);
+        updateStatusBar({ running: true, phase: "scanning", phase_detail: "Starting Investegate direct scan..." });
+        startDirectPolling();
+      } else {
+        showToast(data.message || "Failed to start.");
+        resetDirectButton();
+      }
+    } catch (err) {
+      showToast("Failed to start TR1 direct scan.");
+      resetDirectButton();
+    }
+  });
+}
+
+function startDirectPolling() {
+  if (directPollingInterval) clearInterval(directPollingInterval);
+  directPollingInterval = setInterval(pollDirectStatus, 3000);
+}
+
+async function pollDirectStatus() {
+  try {
+    var res = await fetch(API + "/api/tr1-direct/status");
+    var status = await res.json();
+    updateStatusBar(status);
+
+    if (!status.running) {
+      clearInterval(directPollingInterval);
+      directPollingInterval = null;
+      resetDirectButton();
+      if (status.phase === "done") {
+        showToast(status.phase_detail || "TR1 direct scan complete.", 8000);
+        showScanLog(status);
+        fetchStats();
+        fetchInvestors();
+        updateExportNewBadge();
+      } else if (status.phase === "error") {
+        showToast("Direct scan error: " + (status.error || "Unknown"), 5000);
+        showScanLog(status);
+      }
+    }
+  } catch (err) {}
+}
+
+function resetDirectButton() {
+  if (!runDirectBtn) return;
+  runDirectBtn.disabled = false;
+  var sp = runDirectBtn.querySelector("span");
+  var sv = runDirectBtn.querySelector("svg");
+  if (sp) sp.textContent = "TR1 Direct";
+  if (sv) sv.style.animation = "";
+}
+
 /* ─── TR1 Sweep ─── */
 var runSweepBtn = document.getElementById("run-sweep-btn");
 let sweepPollingInterval = null;

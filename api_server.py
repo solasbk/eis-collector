@@ -182,7 +182,20 @@ def _run_daily_scans():
     print(f"[daily] TR1 scan done: {results['tr1']}")
     _time.sleep(5)
 
-    # 4. TR1 Sweep (200 companies per batch)
+    # 4. TR1 Direct (5,000 Investegate IDs)
+    from tr1_direct import run_tr1_direct, get_direct_status
+    with _daily_lock:
+        _daily_scan_state["status"] = "running_direct"
+    print("[daily] Starting TR1 direct Investegate scan...")
+    run_tr1_direct()
+    while get_direct_status()["running"]:
+        _time.sleep(5)
+    direct_status = get_direct_status()
+    results["direct"] = direct_status.get("phase_detail", "")
+    print(f"[daily] TR1 direct done: {results['direct']}")
+    _time.sleep(5)
+
+    # 5. TR1 Sweep (200 companies per batch)
     from tr1_sweep import run_tr1_sweep, get_sweep_status
     with _daily_lock:
         _daily_scan_state["status"] = "running_sweep"
@@ -538,6 +551,26 @@ def trigger_tr1_sweep():
 def tr1_sweep_status():
     from tr1_sweep import get_sweep_status
     return get_sweep_status()
+
+
+# --- TR1 Direct Endpoints ---
+
+@app.post("/api/tr1-direct")
+def trigger_tr1_direct():
+    from tr1_direct import run_tr1_direct, get_direct_status
+    status = get_direct_status()
+    if status["running"]:
+        return {"status": "already_running", "message": "TR1 direct scan already in progress."}
+    started = run_tr1_direct()
+    if started:
+        return {"status": "started", "message": "TR1 direct Investegate scan started (5,000 IDs per batch)."}
+    return {"status": "error", "message": "Failed to start TR1 direct scan."}
+
+
+@app.get("/api/tr1-direct/status")
+def tr1_direct_status():
+    from tr1_direct import get_direct_status
+    return get_direct_status()
 
 
 # --- Daily Update Endpoints ---
