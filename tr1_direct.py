@@ -325,144 +325,141 @@ def run_tr1_direct():
     def _run():
         try:
             _init_direct_table()
-            
-            start_id = _get_last_scanned_id()
-            end_id = min(start_id + BATCH_SIZE, APPROX_MAX_ID + 100000)
-            
-            # If we've reached the end, loop back to start
-            if start_id >= APPROX_MAX_ID:
-                start_id = DEFAULT_START_ID
-                end_id = start_id + BATCH_SIZE
-                _direct_log("Reached end of range. Restarting from beginning.")
-            
             total_range = APPROX_MAX_ID - DEFAULT_START_ID
-            progress_pct = int(((start_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
-            
-            _direct_log(f"Scanning IDs {start_id} to {end_id} ({progress_pct}% through full range)")
-            _direct_update(current_id=start_id, progress_pct=progress_pct)
-            
             today_str = date.today().isoformat()
-            tr1_ids = []
-            ids_checked = 0
-            
-            # Phase 1: Fast title scan to find TR1 filings
-            _direct_update(phase="scanning", phase_detail=f"Scanning titles {start_id}-{end_id}...")
-            
-            with httpx.Client(timeout=5) as client:
-                for id_num in range(start_id, end_id):
-                    is_tr1, title = _check_title(id_num, client)
-                    ids_checked += 1
-                    
-                    if is_tr1:
-                        tr1_ids.append(id_num)
-                    
-                    if ids_checked % 500 == 0:
-                        _direct_update(
-                            phase_detail=f"Scanning titles: {ids_checked}/{BATCH_SIZE} checked, {len(tr1_ids)} TR1 found...",
-                            ids_scanned=ids_checked,
-                            tr1_found=len(tr1_ids),
-                            current_id=id_num,
-                        )
-                    
-                    # Small delay to be respectful
-                    if ids_checked % 50 == 0:
-                        time.sleep(0.1)
-            
-            _direct_log(f"Title scan complete: {ids_checked} IDs checked, {len(tr1_ids)} TR1 filings found")
-            
-            if not tr1_ids:
+            grand_inserted = 0
+            grand_duplicated = 0
+            grand_found = 0
+            grand_ids = 0
+            grand_tr1 = 0
+            batches_done = 0
+
+            while True:
+                start_id = _get_last_scanned_id()
+                end_id = min(start_id + BATCH_SIZE, APPROX_MAX_ID + 100000)
+
+                # If we've reached the end, we're done
+                if start_id >= APPROX_MAX_ID:
+                    _direct_log(f"Full range complete. {grand_inserted} total new investors across {batches_done} batches.")
+                    break
+
+                progress_pct = int(((start_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
+                batches_done += 1
+
+                _direct_log(f"Batch {batches_done}: IDs {start_id}-{end_id} ({progress_pct}%)")
+                _direct_update(current_id=start_id, progress_pct=progress_pct)
+
+                # Phase 1: Fast title scan
+                tr1_ids = []
+                ids_checked = 0
+                _direct_update(phase="scanning", phase_detail=f"Batch {batches_done}: scanning titles {start_id}-{end_id} ({progress_pct}%)...")
+
+                with httpx.Client(timeout=5) as client:
+                    for id_num in range(start_id, end_id):
+                        is_tr1, title = _check_title(id_num, client)
+                        ids_checked += 1
+
+                        if is_tr1:
+                            tr1_ids.append(id_num)
+
+                        if ids_checked % 500 == 0:
+                            _direct_update(
+                                phase_detail=f"Batch {batches_done} ({progress_pct}%): {ids_checked}/{BATCH_SIZE} scanned, {len(tr1_ids)} TR1 found | Total new: {grand_inserted}",
+                                ids_scanned=grand_ids + ids_checked,
+                                tr1_found=grand_tr1 + len(tr1_ids),
+                                current_id=id_num,
+                            )
+
+                        if ids_checked % 50 == 0:
+                            time.sleep(0.1)
+
+                grand_ids += ids_checked
+                grand_tr1 += len(tr1_ids)
+                _direct_log(f"Batch {batches_done}: {ids_checked} IDs, {len(tr1_ids)} TR1 found")
+
+                if not tr1_ids:
+                    _set_last_scanned_id(end_id)
+                    continue  # move to next batch
+
+                # Phase 2: Extract investor data
+                pages_to_extract = tr1_ids[:MAX_TR1_EXTRACT]
+
+                consecutive_errors = 0
+                for i, id_num in enumerate(pages_to_extract):
+                    url = f"{INVESTEGATE_BASE}/{id_num}"
+                    _direct_update(
+                        phase="extracting",
+                        phase_detail=f"Batch {batches_done} ({progress_pct}%): extracting TR1 {i+1}/{len(pages_to_extract)} | Total new: {grand_inserted}",
+                        tr1_extracted=grand_tr1,
+                    )
+
+                    title, page_text = _fetch_full_page(id_num)
+                    if not page_text or len(page_text.strip()) < 200:
+                        continue
+
+                    try:
+                        extracted = _extract_with_llm(page_text, url, title)
+                        consecutive_errors = 0
+
+                        if extracted:
+                            investors = []
+                            for item in extracted:
+                                entity_type = item.get("entity_type", "Individual")
+                                name = item.get("name", "").strip()
+                                issuer = item.get("issuer", "").strip()
+                                if not name or not issuer:
+                                    continue
+                                investors.append({
+                                    "name": name,
+                                    "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
+                                    "company": entity_type,
+                                    "eis_company": issuer,
+                                    "sector": "Listed Company",
+                                    "amount": f"{item.get('num_shares', 'N/A')} shares",
+                                    "source_url": url,
+                                    "source_type": "Filing",
+                                    "source_name": "LSE TR1 Filing",
+                                    "context_quote": f"TR1 direct ({entity_type}): {item.get('reason', 'Major holding')}. {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). {item.get('notification_date', '')}",
+                                    "linkedin_url": None,
+                                    "date_found": today_str,
+                                })
+
+                            if investors:
+                                ins, dup = _save_investors(investors)
+                                grand_inserted += ins
+                                grand_duplicated += dup
+                                grand_found += len(investors)
+
+                    except Exception as e:
+                        consecutive_errors += 1
+                        _direct_log(f"Extract error ID {id_num}: {str(e)[:100]}")
+                        if consecutive_errors >= 5:
+                            _direct_log("5 consecutive errors. Skipping rest of this batch.")
+                            break
+
+                    _direct_update(
+                        investors_found=grand_found,
+                        investors_saved=grand_inserted,
+                        investors_duplicate=grand_duplicated,
+                    )
+                    time.sleep(0.5)
+
+                # Save progress and continue to next batch
                 _set_last_scanned_id(end_id)
-                _direct_update(
-                    phase="done",
-                    phase_detail=f"Scanned {ids_checked} IDs. No TR1 filings in this range. {progress_pct}% complete.",
-                    running=False, finished_at=datetime.now().isoformat(),
-                    ids_scanned=ids_checked,
-                )
-                return
-            
-            # Phase 2: Extract investor data from TR1 pages
-            pages_to_extract = tr1_ids[:MAX_TR1_EXTRACT]
-            _direct_log(f"Extracting data from {len(pages_to_extract)} TR1 pages...")
-            
-            total_inserted = 0
-            total_duplicated = 0
-            total_found = 0
-            consecutive_errors = 0
-            
-            for i, id_num in enumerate(pages_to_extract):
-                url = f"{INVESTEGATE_BASE}/{id_num}"
-                _direct_update(
-                    phase="extracting",
-                    phase_detail=f"Extracting TR1 ({i+1}/{len(pages_to_extract)}): ID {id_num}...",
-                    tr1_extracted=i + 1,
-                )
-                
-                title, page_text = _fetch_full_page(id_num)
-                if not page_text or len(page_text.strip()) < 200:
-                    continue
-                
-                try:
-                    extracted = _extract_with_llm(page_text, url, title)
-                    consecutive_errors = 0
-                    
-                    if extracted:
-                        investors = []
-                        for item in extracted:
-                            entity_type = item.get("entity_type", "Individual")
-                            name = item.get("name", "").strip()
-                            issuer = item.get("issuer", "").strip()
-                            if not name or not issuer:
-                                continue
-                            investors.append({
-                                "name": name,
-                                "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
-                                "company": entity_type,
-                                "eis_company": issuer,
-                                "sector": "Listed Company",
-                                "amount": f"{item.get('num_shares', 'N/A')} shares",
-                                "source_url": url,
-                                "source_type": "Filing",
-                                "source_name": "LSE TR1 Filing",
-                                "context_quote": f"TR1 direct ({entity_type}): {item.get('reason', 'Major holding')}. {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). {item.get('notification_date', '')}",
-                                "linkedin_url": None,
-                                "date_found": today_str,
-                            })
-                        
-                        if investors:
-                            ins, dup = _save_investors(investors)
-                            total_inserted += ins
-                            total_duplicated += dup
-                            total_found += len(investors)
-                    
-                except Exception as e:
-                    consecutive_errors += 1
-                    _direct_log(f"Extract error ID {id_num}: {str(e)[:100]}")
-                    if consecutive_errors >= 5:
-                        _direct_log("Aborting extraction after 5 consecutive errors.")
-                        break
-                
-                _direct_update(
-                    investors_found=total_found,
-                    investors_saved=total_inserted,
-                    investors_duplicate=total_duplicated,
-                )
-                time.sleep(0.5)
-            
-            # Save progress
-            _set_last_scanned_id(end_id)
-            
-            progress_pct = int(((end_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
-            _direct_log(f"Batch complete. {total_inserted} new, {total_duplicated} dupes. {progress_pct}% through full range.")
-            
+                progress_pct = int(((end_id - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 0
+                _direct_log(f"Batch {batches_done} done. Running total: {grand_inserted} new, {grand_duplicated} dupes. {progress_pct}% complete.")
+
+            # All batches finished
+            final_pct = int(((_get_last_scanned_id() - DEFAULT_START_ID) / total_range) * 100) if total_range > 0 else 100
             _direct_update(
                 phase="done",
-                phase_detail=f"Done: {total_inserted} new investors from {len(pages_to_extract)} TR1 filings. Scanned IDs {start_id}-{end_id} ({progress_pct}% of full range).",
+                phase_detail=f"Complete: {grand_inserted} new investors from {grand_tr1} TR1 filings across {grand_ids} IDs ({batches_done} batches, {final_pct}%).",
                 running=False,
                 finished_at=datetime.now().isoformat(),
-                ids_scanned=ids_checked,
-                progress_pct=progress_pct,
+                ids_scanned=grand_ids,
+                progress_pct=final_pct,
             )
-            
+
         except Exception as e:
             _direct_log(f"Scan error: {e}")
             _direct_update(
