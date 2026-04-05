@@ -170,42 +170,17 @@ def _run_daily_scans():
     print(f"[daily] CH scan done: {results['ch']}")
     _time.sleep(5)
 
-    # 3. TR1 scan (7 days for daily updates)
-    with _daily_lock:
-        _daily_scan_state["status"] = "running_tr1"
-    print("[daily] Starting TR1 scan (7 days)...")
-    run_tr1_scan(days_back=7)
-    while get_tr1_scan_status()["running"]:
-        _time.sleep(5)
-    tr1_status = get_tr1_scan_status()
-    results["tr1"] = tr1_status.get("phase_detail", "")
-    print(f"[daily] TR1 scan done: {results['tr1']}")
-    _time.sleep(5)
-
-    # 4. TR1 Direct (5,000 Investegate IDs)
+    # 3. TR1 Direct (5,000 Investegate IDs)
     from tr1_direct import run_tr1_direct, get_direct_status
     with _daily_lock:
-        _daily_scan_state["status"] = "running_direct"
+        _daily_scan_state["status"] = "running_tr1"
     print("[daily] Starting TR1 direct Investegate scan...")
     run_tr1_direct()
     while get_direct_status()["running"]:
         _time.sleep(5)
     direct_status = get_direct_status()
-    results["direct"] = direct_status.get("phase_detail", "")
-    print(f"[daily] TR1 direct done: {results['direct']}")
-    _time.sleep(5)
-
-    # 5. TR1 Sweep (200 companies per batch)
-    from tr1_sweep import run_tr1_sweep, get_sweep_status
-    with _daily_lock:
-        _daily_scan_state["status"] = "running_sweep"
-    print("[daily] Starting TR1 company sweep...")
-    run_tr1_sweep()
-    while get_sweep_status()["running"]:
-        _time.sleep(5)
-    sweep_status = get_sweep_status()
-    results["sweep"] = sweep_status.get("phase_detail", "")
-    print(f"[daily] TR1 sweep done: {results['sweep']}")
+    results["tr1"] = direct_status.get("phase_detail", "")
+    print(f"[daily] TR1 direct done: {results['tr1']}")
 
     return results
 

@@ -37,7 +37,6 @@ const exportNewBtn = document.getElementById("export-new-btn");
 const exportNewBadge = document.getElementById("export-new-badge");
 const runCollectionBtn = document.getElementById("run-collection-btn");
 const runChBtn = document.getElementById("run-ch-btn");
-const runTr1Btn = document.getElementById("run-tr1-btn");
 const filterOrigin = document.getElementById("filter-origin");
 const filterEntityType = document.getElementById("filter-entity-type");
 const filterHolding = document.getElementById("filter-holding");
@@ -756,7 +755,6 @@ exportExcelBtn.addEventListener("click", exportExcel);
 exportNewBtn.addEventListener("click", exportNew);
 runCollectionBtn.addEventListener("click", runCollection);
 if (runChBtn) runChBtn.addEventListener("click", runChScan);
-if (runTr1Btn) runTr1Btn.addEventListener("click", runTr1Scan);
 
 // Close detail on Escape
 document.addEventListener("keydown", function (e) {
@@ -923,7 +921,7 @@ function resetDirectButton() {
   runDirectBtn.disabled = false;
   var sp = runDirectBtn.querySelector("span");
   var sv = runDirectBtn.querySelector("svg");
-  if (sp) sp.textContent = "TR1 Direct";
+  if (sp) sp.textContent = "TR1 Scan";
   if (sv) sv.style.animation = "";
 }
 
