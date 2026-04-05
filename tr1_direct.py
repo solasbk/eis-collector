@@ -24,9 +24,11 @@ MAX_TR1_EXTRACT = 200      # max TR1 pages to extract per run (Gemini cost contr
 PAGE_MAX_CHARS = 10000
 INVESTEGATE_BASE = "https://www.investegate.co.uk/announcement/rns/x/x"
 
-# Starting ID: ~September 2020 (5 years of data)
-DEFAULT_START_ID = 6000000
-# Approximate current max
+# Starting ID: ~mid 2022 (where Investegate titles become specific)
+# Below 7500000, all titles are generic "Investegate | Company Announcement"
+# which makes title-based TR1 detection impossible.
+DEFAULT_START_ID = 7500000
+# Approximate current max (April 2026)
 APPROX_MAX_ID = 8600000
 
 # Title keywords that indicate a TR1 / major holdings filing
@@ -115,7 +117,11 @@ def _get_last_scanned_id():
     cur.close()
     db.close()
     if row:
-        return int(row["value"])
+        stored_id = int(row["value"])
+        # If stored ID is below the useful range, jump to default
+        if stored_id < DEFAULT_START_ID:
+            return DEFAULT_START_ID
+        return stored_id
     return DEFAULT_START_ID
 
 
