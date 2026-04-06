@@ -547,15 +547,25 @@ def tr1_sweep_status():
 # --- TR1 Direct Endpoints ---
 
 @app.post("/api/tr1-direct")
-def trigger_tr1_direct():
+def trigger_tr1_direct(max_market_cap: int = Query(0, ge=0)):
     from tr1_direct import run_tr1_direct, get_direct_status
     status = get_direct_status()
     if status["running"]:
         return {"status": "already_running", "message": "TR1 direct scan already in progress."}
-    started = run_tr1_direct()
+    started = run_tr1_direct(max_market_cap=max_market_cap)
+    cap_msg = f" (companies under \u00a3{max_market_cap:,}M)" if max_market_cap > 0 else ""
     if started:
-        return {"status": "started", "message": "TR1 direct Investegate scan started (5,000 IDs per batch)."}
+        return {"status": "started", "message": f"TR1 scan started{cap_msg}."}
     return {"status": "error", "message": "Failed to start TR1 direct scan."}
+
+
+@app.post("/api/tr1-direct/stop")
+def stop_tr1_direct():
+    from tr1_direct import stop_direct_scan
+    stopped = stop_direct_scan()
+    if stopped:
+        return {"status": "stopping", "message": "Stop requested. Will stop after current batch."}
+    return {"status": "not_running", "message": "No scan is running."}
 
 
 @app.get("/api/tr1-direct/status")

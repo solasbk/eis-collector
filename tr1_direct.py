@@ -18,6 +18,9 @@ from datetime import datetime, date
 import httpx
 from bs4 import BeautifulSoup
 
+# Market cap cache: company name (lowered) → market cap in millions GBP
+_mcap_cache = {}
+
 # ── Config ────────────────────────────────────────────────────────
 BATCH_SIZE = 5000          # IDs to scan per run
 MAX_TR1_EXTRACT = 200      # max TR1 pages to extract per run (Gemini cost control)
@@ -53,6 +56,7 @@ EXCLUDE_KEYWORDS = [
 _direct_lock = threading.Lock()
 _direct_state = {
     "running": False,
+    "stop_requested": False,
     "started_at": None,
     "finished_at": None,
     "phase": "idle",
@@ -65,9 +69,19 @@ _direct_state = {
     "investors_duplicate": 0,
     "current_id": 0,
     "progress_pct": 0,
+    "max_market_cap": 0,  # 0 = no filter
     "error": None,
     "log": [],
 }
+
+
+def stop_direct_scan():
+    """Request the running scan to stop after the current batch."""
+    with _direct_lock:
+        if _direct_state["running"]:
+            _direct_state["stop_requested"] = True
+            return True
+    return False
 
 
 def get_direct_status():
@@ -168,6 +182,67 @@ def _check_title(id_num, client):
             return False, ""
     except Exception:
         return False, ""
+
+
+def _extract_issuer_name(id_num):
+    """Quick fetch to extract just the issuer/company name from a TR1 page.
+    Reads enough of the page to find the company name without a full parse."""
+    try:
+        url = f"{INVESTEGATE_BASE}/{id_num}"
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        if resp.status_code != 200:
+            return ""
+        # Look for common patterns in TR1 filings that name the issuer
+        text = resp.text[:8000]
+        import re
+        # Pattern 1: "1. Issuer Name: COMPANY" or "1a. Name: COMPANY"
+        m = re.search(r'(?:1\.?\s*(?:a\.?)?\s*(?:Issuer)?\s*Name[:\s]+)([A-Z][A-Za-z0-9\s&.,()\'-]+?)(?:\n|<|\r)', text)
+        if m:
+            return m.group(1).strip()
+        # Pattern 2: Company name in breadcrumb or header
+        soup = BeautifulSoup(text, "html.parser")
+        # Check for company name in h1/h2 or specific div
+        for tag in soup.find_all(["h1", "h2", "h3"]):
+            t = tag.get_text().strip()
+            if t and len(t) > 3 and t.lower() not in ["holding(s) in company", "notification of major holdings", "tr-1"]:
+                return t
+        return ""
+    except Exception:
+        return ""
+
+
+def _lookup_market_cap(company_name):
+    """Look up market cap in millions GBP. Returns 0 if unknown (treated as no filter)."""
+    if not company_name:
+        return 0
+    
+    key = company_name.lower().strip()
+    if key in _mcap_cache:
+        return _mcap_cache[key]
+    
+    try:
+        import yfinance as yf
+        # Try common ticker formats for UK stocks
+        # Clean the name and try as ticker
+        clean = company_name.upper().replace(" PLC", "").replace(" LTD", "").replace(" GROUP", "").replace(" HOLDINGS", "").strip()
+        # Try direct search
+        search = yf.Search(company_name, max_results=3)
+        if search.quotes:
+            for quote in search.quotes:
+                symbol = quote.get("symbol", "")
+                if symbol.endswith(".L"):  # London Stock Exchange
+                    ticker = yf.Ticker(symbol)
+                    info = ticker.info
+                    mcap = info.get("marketCap", 0)
+                    if mcap:
+                        mcap_m = int(mcap / 1e6)  # Convert to millions
+                        _mcap_cache[key] = mcap_m
+                        return mcap_m
+        _mcap_cache[key] = 0  # Cache misses too
+        return 0
+    except Exception:
+        _mcap_cache[key] = 0
+        return 0
 
 
 def _fetch_full_page(id_num):
@@ -305,13 +380,19 @@ def _save_investors(investors):
 
 # ── Main entry point ──────────────────────────────────────────────
 
-def run_tr1_direct():
-    """Run a batch of the direct Investegate sequential scan."""
+def run_tr1_direct(max_market_cap=0):
+    """Run the direct Investegate sequential scan.
+    
+    Args:
+        max_market_cap: Max market cap in millions GBP. 0 = no filter.
+    """
     with _direct_lock:
         if _direct_state["running"]:
             return False
+        _direct_state["stop_requested"] = False
         _direct_state.update({
             "running": True,
+            "max_market_cap": max_market_cap,
             "started_at": datetime.now().isoformat(),
             "finished_at": None,
             "phase": "scanning",
@@ -340,7 +421,17 @@ def run_tr1_direct():
             grand_tr1 = 0
             batches_done = 0
 
+            max_mcap = _direct_state.get("max_market_cap", 0)
+            if max_mcap > 0:
+                _direct_log(f"Market cap filter: only companies under £{max_mcap:,}M")
+
             while True:
+                # Check for stop request
+                with _direct_lock:
+                    if _direct_state["stop_requested"]:
+                        _direct_log(f"Stop requested. Saving progress at current position.")
+                        break
+
                 start_id = _get_last_scanned_id()
                 end_id = min(start_id + BATCH_SIZE, APPROX_MAX_ID + 100000)
 
@@ -379,6 +470,13 @@ def run_tr1_direct():
                         if ids_checked % 50 == 0:
                             time.sleep(0.1)
 
+                        # Check for stop mid-scan
+                        if ids_checked % 500 == 0:
+                            with _direct_lock:
+                                if _direct_state["stop_requested"]:
+                                    _direct_log("Stop requested during title scan.")
+                                    break
+
                 grand_ids += ids_checked
                 grand_tr1 += len(tr1_ids)
                 _direct_log(f"Batch {batches_done}: {ids_checked} IDs, {len(tr1_ids)} TR1 found")
@@ -387,15 +485,36 @@ def run_tr1_direct():
                     _set_last_scanned_id(end_id)
                     continue  # move to next batch
 
-                # Phase 2: Extract investor data
+                # Phase 2: Market cap filter + Extract investor data
                 pages_to_extract = tr1_ids[:MAX_TR1_EXTRACT]
+                skipped_mcap = 0
 
                 consecutive_errors = 0
                 for i, id_num in enumerate(pages_to_extract):
+                    # Check for stop
+                    with _direct_lock:
+                        if _direct_state["stop_requested"]:
+                            _direct_log("Stop requested during extraction.")
+                            break
+
                     url = f"{INVESTEGATE_BASE}/{id_num}"
+
+                    # Market cap pre-filter: extract company name, check cap
+                    if max_mcap > 0:
+                        _direct_update(
+                            phase="extracting",
+                            phase_detail=f"Batch {batches_done} ({progress_pct}%): checking market cap {i+1}/{len(pages_to_extract)} | New: {grand_inserted} | Skipped: {skipped_mcap}",
+                        )
+                        issuer = _extract_issuer_name(id_num)
+                        if issuer:
+                            mcap = _lookup_market_cap(issuer)
+                            if mcap > 0 and mcap > max_mcap:
+                                skipped_mcap += 1
+                                continue  # Skip — company too large
+
                     _direct_update(
                         phase="extracting",
-                        phase_detail=f"Batch {batches_done} ({progress_pct}%): extracting TR1 {i+1}/{len(pages_to_extract)} | Total new: {grand_inserted}",
+                        phase_detail=f"Batch {batches_done} ({progress_pct}%): extracting TR1 {i+1}/{len(pages_to_extract)} | New: {grand_inserted} | Skipped: {skipped_mcap}",
                         tr1_extracted=grand_tr1,
                     )
 

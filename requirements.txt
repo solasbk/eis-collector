@@ -8,3 +8,4 @@ anthropic
 pydantic
 psycopg2-binary
 python-multipart
+yfinance

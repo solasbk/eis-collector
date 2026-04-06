@@ -853,36 +853,57 @@ function resetChButton() {
 
 /* ─── TR1 Direct (Investegate Sequential) ─── */
 var runDirectBtn = document.getElementById("run-direct-btn");
+var stopDirectBtn = document.getElementById("stop-direct-btn");
+var tr1McapInput = document.getElementById("tr1-mcap");
 let directPollingInterval = null;
 
 if (runDirectBtn) {
   runDirectBtn.addEventListener("click", async function () {
     try {
       runDirectBtn.disabled = true;
+      runDirectBtn.style.display = "none";
+      stopDirectBtn.style.display = "";
       var sp = runDirectBtn.querySelector("span");
       var sv = runDirectBtn.querySelector("svg");
       if (sp) sp.textContent = "Scanning...";
       if (sv) sv.style.animation = "spin 1s linear infinite";
 
-      var res = await fetch(API + "/api/tr1-direct", { method: "POST" });
+      var mcap = parseInt(tr1McapInput.value) || 0;
+      var url = API + "/api/tr1-direct?max_market_cap=" + mcap;
+      var res = await fetch(url, { method: "POST" });
       var data = await res.json();
 
       if (data.status === "already_running") {
-        showToast("TR1 direct scan already running.");
+        showToast("TR1 scan already running.");
         startDirectPolling();
         return;
       }
       if (data.status === "started") {
-        showToast("TR1 direct Investegate scan started...", 5000);
-        updateStatusBar({ running: true, phase: "scanning", phase_detail: "Starting Investegate direct scan..." });
+        showToast(data.message || "TR1 scan started...", 5000);
+        updateStatusBar({ running: true, phase: "scanning", phase_detail: "Starting TR1 scan..." });
         startDirectPolling();
       } else {
         showToast(data.message || "Failed to start.");
         resetDirectButton();
       }
     } catch (err) {
-      showToast("Failed to start TR1 direct scan.");
+      showToast("Failed to start TR1 scan.");
       resetDirectButton();
+    }
+  });
+}
+
+if (stopDirectBtn) {
+  stopDirectBtn.addEventListener("click", async function () {
+    try {
+      var res = await fetch(API + "/api/tr1-direct/stop", { method: "POST" });
+      var data = await res.json();
+      showToast(data.message || "Stopping...", 3000);
+      var sp = stopDirectBtn.querySelector("span");
+      if (sp) sp.textContent = "Stopping...";
+      stopDirectBtn.disabled = true;
+    } catch (err) {
+      showToast("Failed to stop.");
     }
   });
 }
@@ -903,13 +924,13 @@ async function pollDirectStatus() {
       directPollingInterval = null;
       resetDirectButton();
       if (status.phase === "done") {
-        showToast(status.phase_detail || "TR1 direct scan complete.", 8000);
+        showToast(status.phase_detail || "TR1 scan complete.", 8000);
         showScanLog(status);
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
       } else if (status.phase === "error") {
-        showToast("Direct scan error: " + (status.error || "Unknown"), 5000);
+        showToast("TR1 scan error: " + (status.error || "Unknown"), 5000);
         showScanLog(status);
       }
     }
@@ -919,10 +940,15 @@ async function pollDirectStatus() {
 function resetDirectButton() {
   if (!runDirectBtn) return;
   runDirectBtn.disabled = false;
-  var sp = runDirectBtn.querySelector("span");
-  var sv = runDirectBtn.querySelector("svg");
-  if (sp) sp.textContent = "TR1 Scan";
-  if (sv) sv.style.animation = "";
+  runDirectBtn.style.display = "";
+  stopDirectBtn.style.display = "none";
+  stopDirectBtn.disabled = false;
+  var sp = stopDirectBtn.querySelector("span");
+  if (sp) sp.textContent = "Stop";
+  var sp2 = runDirectBtn.querySelector("span");
+  var sv2 = runDirectBtn.querySelector("svg");
+  if (sp2) sp2.textContent = "TR1 Scan";
+  if (sv2) sv2.style.animation = "";
 }
 
 /* ─── TR1 Sweep ─── */
