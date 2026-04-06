@@ -908,18 +908,27 @@ if (stopDirectBtn) {
   });
 }
 
+var directPollCount = 0;
+
 function startDirectPolling() {
   if (directPollingInterval) clearInterval(directPollingInterval);
-  directPollingInterval = setInterval(pollDirectStatus, 3000);
+  directPollCount = 0;
+  directPollingInterval = setInterval(pollDirectStatus, 2000);
 }
 
 async function pollDirectStatus() {
+  directPollCount++;
   try {
     var res = await fetch(API + "/api/tr1-direct/status");
     var status = await res.json();
-    updateStatusBar(status);
 
-    if (!status.running) {
+    // Always update status bar if scan has started (phase != idle)
+    if (status.phase !== "idle") {
+      updateStatusBar(status);
+    }
+
+    if (!status.running && directPollCount > 3) {
+      // Only stop polling after at least 3 polls (give scan time to start)
       clearInterval(directPollingInterval);
       directPollingInterval = null;
       resetDirectButton();
