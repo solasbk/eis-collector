@@ -1,12 +1,13 @@
 """tr1_direct.py -- TR1 scan for LSE companies filtered by market cap.
 
-Instead of scanning every Investegate ID sequentially, this module:
-1. Loads the LSE companies list
-2. Filters to companies under the market cap threshold (via yfinance)
-3. Searches Investegate for TR1 filings per qualifying company
-4. Extracts investor data using Gemini
+Optimized pipeline:
+1. Pre-filter LSE list to equities only (skip bonds, ETFs, warrants)
+2. Check market cap via yfinance (cached in DB across restarts)
+3. Search Investegate for TR1 filings per qualifying company
+4. Batch Gemini extraction (2-3 pages per call)
+5. Parallel company processing (3 concurrent workers)
 
-Progress is tracked per-company in the database.
+Progress tracked per-company in the database.
 """
 
 import json
@@ -14,6 +15,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date
 from pathlib import Path
 
@@ -21,9 +23,19 @@ import httpx
 from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────
-COMPANIES_PER_BATCH = 50  # companies to process before saving progress
-MAX_TR1_PER_COMPANY = 5   # max TR1 pages to fetch per company
-PAGE_MAX_CHARS = 10000
+PARALLEL_WORKERS = 3      # companies processed in parallel
+MAX_TR1_PER_COMPANY = 5   # max TR1 pages per company
+PAGE_MAX_CHARS = 8000
+GEMINI_BATCH_PAGES = 3    # TR1 pages per Gemini call
+
+# Keywords that indicate a real equity (not bonds, ETFs, warrants)
+EQUITY_KEYWORDS = ["PLC", "LTD", "LIMITED", "GROUP", "HOLDINGS",
+                   "CORPORATION", "INC", "CORP", "CAPITAL"]
+SKIP_KEYWORDS = ["NOTES", "BDS ", "BOND", "STRIP", "WARRANT", "ETF",
+                 "TRACKER", "ISHARES", "SPDR", "VANGUARD", "INVESCO",
+                 "WISDOMTREE", "LYXOR", "AMUNDI", "UBS ETF", "JPM ",
+                 "TREASURY", "GILT", "DEBENTURE", "DB X-TRACKERS",
+                 "CONCEPT FUND", "SOURCE"]
 
 # ── Scan state ────────────────────────────────────────────────────
 _direct_lock = threading.Lock()
@@ -76,17 +88,31 @@ def _direct_log(msg):
     print(f"[tr1_direct] {msg}")
 
 
-# ── Load company list ─────────────────────────────────────────────
+# ── Load and pre-filter company list ──────────────────────────────
 
 def _load_companies():
+    """Load LSE companies and filter to equities only."""
     path = Path(__file__).parent / "lse_companies.json"
     if not path.exists():
         return []
     with open(path) as f:
-        return json.load(f)
+        all_companies = json.load(f)
+
+    # Filter to likely equities
+    equities = []
+    for c in all_companies:
+        name_upper = c["name"].upper()
+        # Skip bonds, ETFs, warrants, etc.
+        if any(kw in name_upper for kw in SKIP_KEYWORDS):
+            continue
+        # Keep if has equity keyword or is short name (likely equity)
+        if any(kw in name_upper for kw in EQUITY_KEYWORDS) or len(c["name"].split()) <= 4:
+            equities.append(c)
+
+    return equities
 
 
-# ── Database: progress tracking ───────────────────────────────────
+# ── Database: progress tracking + market cap cache ────────────────
 
 def _init_tables():
     from api_server import get_db
@@ -98,41 +124,58 @@ def _init_tables():
             company_name TEXT NOT NULL UNIQUE,
             ticker TEXT,
             market_cap_m INTEGER DEFAULT 0,
+            mcap_found BOOLEAN DEFAULT FALSE,
             last_searched TIMESTAMP,
             tr1_investors_found INTEGER DEFAULT 0
         )
     """)
+    # Add mcap_found column if it doesn't exist (upgrade path)
+    try:
+        cur.execute("ALTER TABLE tr1_company_progress ADD COLUMN IF NOT EXISTS mcap_found BOOLEAN DEFAULT FALSE")
+    except Exception:
+        pass
     db.commit()
     cur.close()
     db.close()
 
 
 def _get_searched_companies():
-    """Get set of company names searched in the last 7 days."""
     from api_server import get_db
     db = get_db()
     cur = db.cursor()
-    cur.execute("""
-        SELECT company_name FROM tr1_company_progress 
-        WHERE last_searched > NOW() - INTERVAL '7 days'
-    """)
+    cur.execute("SELECT company_name FROM tr1_company_progress WHERE last_searched > NOW() - INTERVAL '7 days'")
     result = set(row["company_name"] for row in cur.fetchall())
     cur.close()
     db.close()
     return result
 
 
-def _mark_searched(company_name, ticker, market_cap_m, tr1_count):
+def _get_cached_mcaps():
+    """Load market cap cache from database."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT ticker, market_cap_m, mcap_found FROM tr1_company_progress WHERE ticker IS NOT NULL AND ticker != ''")
+    cache = {}
+    for row in cur.fetchall():
+        cache[row["ticker"].upper()] = (row["market_cap_m"], bool(row["mcap_found"]))
+    cur.close()
+    db.close()
+    return cache
+
+
+def _mark_searched(company_name, ticker, market_cap_m, mcap_found, tr1_count):
     from api_server import get_db
     db = get_db()
     cur = db.cursor()
     cur.execute("""
-        INSERT INTO tr1_company_progress (company_name, ticker, market_cap_m, last_searched, tr1_investors_found)
-        VALUES (%s, %s, %s, NOW(), %s)
+        INSERT INTO tr1_company_progress (company_name, ticker, market_cap_m, mcap_found, last_searched, tr1_investors_found)
+        VALUES (%s, %s, %s, %s, NOW(), %s)
         ON CONFLICT (company_name)
         DO UPDATE SET ticker = EXCLUDED.ticker, market_cap_m = EXCLUDED.market_cap_m,
-                      last_searched = NOW(), tr1_investors_found = EXCLUDED.tr1_investors_found
-    """, (company_name, ticker, market_cap_m, tr1_count))
+                      mcap_found = EXCLUDED.mcap_found, last_searched = NOW(),
+                      tr1_investors_found = EXCLUDED.tr1_investors_found
+    """, (company_name, ticker, market_cap_m, mcap_found, tr1_count))
     db.commit()
     cur.close()
     db.close()
@@ -151,20 +194,18 @@ def _get_progress_stats():
     return total, recent
 
 
-# ── Market cap lookup ─────────────────────────────────────────────
+# ── Market cap lookup (with DB cache) ─────────────────────────────
 
 _mcap_cache = {}
 
 def _get_market_cap(ticker, company_name):
-    """Look up market cap in £ millions. Returns (market_cap_m, found)."""
+    """Look up market cap in £M. Returns (mcap_m, found). Uses DB cache."""
     key = ticker.upper()
     if key in _mcap_cache:
         return _mcap_cache[key]
 
     try:
         import yfinance as yf
-
-        # Try direct ticker first
         symbol = f"{ticker}.L"
         t = yf.Ticker(symbol)
         info = t.info
@@ -194,13 +235,12 @@ def _get_market_cap(ticker, company_name):
         return (0, False)
 
 
-# ── TR1 search per company ────────────────────────────────────────
+# ── TR1 search and extraction ─────────────────────────────────────
 
 def _search_company_tr1(company_name, serper_key):
-    """Search Investegate for TR1 filings for a specific company."""
+    """Search for TR1 filings for a company. Returns list of {title, url, snippet}."""
     results = []
     seen = set()
-
     queries = [
         f'site:investegate.co.uk "TR-1" "{company_name}"',
         f'site:investegate.co.uk "Holding(s) in Company" "{company_name}"',
@@ -221,27 +261,20 @@ def _search_company_tr1(company_name, serper_key):
                     title = item.get("title", "").lower()
                     if url not in seen and ("holding" in title or "tr-1" in title or "tr1" in title or "notification" in title or "investegate" in url.lower()):
                         seen.add(url)
-                        results.append({
-                            "title": item.get("title", ""),
-                            "url": url,
-                            "snippet": item.get("snippet", ""),
-                        })
+                        results.append({"title": item.get("title", ""), "url": url, "snippet": item.get("snippet", "")})
             elif resp.status_code == 429:
                 _direct_log("Serper rate limited. Waiting 30s...")
                 time.sleep(30)
         except Exception as e:
             _direct_log(f"Serper error for {company_name}: {e}")
-        time.sleep(0.3)
+        time.sleep(0.2)
 
     return results[:MAX_TR1_PER_COMPANY]
 
 
 def _fetch_page_text(url):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml",
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", "Accept": "text/html,application/xhtml+xml"}
         resp = httpx.get(url, timeout=15, follow_redirects=True, headers=headers)
         if resp.status_code != 200:
             return "", ""
@@ -256,21 +289,21 @@ def _fetch_page_text(url):
         return "", ""
 
 
-# ── LLM extraction ────────────────────────────────────────────────
-
-def _extract_with_llm(page_text, url, title, company_name):
+def _extract_batch_with_llm(pages_data, company_name):
+    """Extract investors from multiple TR1 pages in a single Gemini call."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    prompt = f"""Analyze this TR1 (Notification of Major Holdings) announcement for {company_name}.
+    # Build combined prompt
+    pages_text = ""
+    for idx, (title, text, url) in enumerate(pages_data, 1):
+        pages_text += f"\n--- PAGE {idx} ---\nTitle: {title}\nURL: {url}\n\n{text}\n"
 
-Page title: {title}
-URL: {url}
+    prompt = f"""Analyze these {len(pages_data)} TR1 (Notification of Major Holdings) announcements for {company_name}.
 
-Content:
-{page_text}
+{pages_text}
 
-Extract for each person/entity:
+For EACH page, extract all persons and entities:
 - name: Full name
 - issuer: Company whose shares are held
 - holding_pct: Percentage of voting rights
@@ -279,7 +312,7 @@ Extract for each person/entity:
 - reason: Brief reason
 - entity_type: "Individual" or "Organisation"
 
-Extract both individuals AND organisations. Return ONLY a JSON array. If nothing found: []"""
+Extract both individuals AND organisations across ALL pages. Return a single flat JSON array combining results from all pages. If nothing found: []"""
 
     providers = []
     if gemini_key:
@@ -294,7 +327,7 @@ Extract both individuals AND organisations. Return ONLY a JSON array. If nothing
                     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
                     headers={"x-goog-api-key": prov_key, "Content-Type": "application/json"},
                     json={"contents": [{"parts": [{"text": prompt}]}]},
-                    timeout=60,
+                    timeout=90,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -305,7 +338,7 @@ Extract both individuals AND organisations. Return ONLY a JSON array. If nothing
                 client = anthropic.Anthropic(api_key=prov_key)
                 msg = client.messages.create(
                     model="claude-haiku-4-5-20251001",
-                    max_tokens=2000,
+                    max_tokens=3000,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return _parse_response(msg.content[0].text if msg.content else "")
@@ -362,14 +395,83 @@ def _save_investors(investors):
     return inserted, duplicated
 
 
+# ── Process a single company (called in parallel) ─────────────────
+
+def _process_company(company, serper_key, max_mcap, today_str):
+    """Process one company: check mcap → search TR1 → extract → save.
+    Returns (name, ticker, mcap_m, mcap_found, status, investors_inserted)
+    status: 'skipped_large', 'skipped_nodata_searched', 'searched', 'error'
+    """
+    name = company["name"]
+    ticker = company.get("ticker", "")
+
+    try:
+        # Market cap check
+        mcap_m, mcap_found = 0, False
+        if max_mcap > 0 and ticker:
+            mcap_m, mcap_found = _get_market_cap(ticker, name)
+            if mcap_found and mcap_m > max_mcap:
+                return (name, ticker, mcap_m, True, "skipped_large", 0)
+
+        # Search for TR1 filings
+        tr1_pages = _search_company_tr1(name, serper_key)
+        if not tr1_pages:
+            return (name, ticker, mcap_m, mcap_found, "searched", 0)
+
+        # Fetch page content
+        pages_data = []
+        for page in tr1_pages:
+            title, text = _fetch_page_text(page["url"])
+            if text and len(text.strip()) >= 200:
+                pages_data.append((title, text, page["url"]))
+
+        if not pages_data:
+            return (name, ticker, mcap_m, mcap_found, "searched", 0)
+
+        # Batch extract with Gemini (send up to GEMINI_BATCH_PAGES at once)
+        all_investors = []
+        for batch_start in range(0, len(pages_data), GEMINI_BATCH_PAGES):
+            batch = pages_data[batch_start:batch_start + GEMINI_BATCH_PAGES]
+            extracted = _extract_batch_with_llm(batch, name)
+            if extracted:
+                for item in extracted:
+                    entity_type = item.get("entity_type", "Individual")
+                    inv_name = item.get("name", "").strip()
+                    issuer = item.get("issuer", "").strip() or name
+                    if not inv_name:
+                        continue
+                    # Use the first page URL as source for the batch
+                    source_url = batch[0][2] if batch else ""
+                    all_investors.append({
+                        "name": inv_name,
+                        "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
+                        "company": entity_type,
+                        "eis_company": issuer,
+                        "sector": "Listed Company",
+                        "amount": f"{item.get('num_shares', 'N/A')} shares",
+                        "source_url": source_url,
+                        "source_type": "Filing",
+                        "source_name": "LSE TR1 Filing",
+                        "context_quote": f"TR1 ({entity_type}): {item.get('reason', 'Major holding')}. {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). {item.get('notification_date', '')}",
+                        "linkedin_url": None,
+                        "date_found": today_str,
+                    })
+            time.sleep(0.3)
+
+        if all_investors:
+            ins, dup = _save_investors(all_investors)
+            return (name, ticker, mcap_m, mcap_found, "searched", ins)
+
+        return (name, ticker, mcap_m, mcap_found, "searched", 0)
+
+    except Exception as e:
+        _direct_log(f"Error processing {name}: {e}")
+        return (name, ticker, 0, False, "error", 0)
+
+
 # ── Main entry point ──────────────────────────────────────────────
 
 def run_tr1_direct(max_market_cap=0):
-    """Run TR1 scan filtered by market cap.
-    
-    Args:
-        max_market_cap: Max market cap in £M. 0 = all companies.
-    """
     with _direct_lock:
         if _direct_state["running"]:
             return False
@@ -381,51 +483,47 @@ def run_tr1_direct(max_market_cap=0):
             "finished_at": None,
             "phase": "loading",
             "phase_detail": "Loading companies...",
-            "companies_total": 0,
-            "companies_checked": 0,
-            "companies_qualified": 0,
-            "companies_with_tr1": 0,
-            "investors_found": 0,
-            "investors_saved": 0,
-            "investors_duplicate": 0,
-            "skipped_large": 0,
-            "skipped_no_data": 0,
-            "progress_pct": 0,
-            "error": None,
-            "log": [],
+            "companies_total": 0, "companies_checked": 0,
+            "companies_qualified": 0, "companies_with_tr1": 0,
+            "investors_found": 0, "investors_saved": 0, "investors_duplicate": 0,
+            "skipped_large": 0, "skipped_no_data": 0,
+            "progress_pct": 0, "error": None, "log": [],
         })
 
     def _run():
         try:
             serper_key = os.environ.get("SERPER_API_KEY", "")
             if not serper_key:
-                _direct_log("SERPER_API_KEY not set.")
                 _direct_update(phase="error", phase_detail="SERPER_API_KEY not set.",
                               error="No API key", running=False, finished_at=datetime.now().isoformat())
                 return
 
             _init_tables()
+
+            # Load and pre-filter to equities
             companies = _load_companies()
             if not companies:
                 _direct_update(phase="error", phase_detail="No companies list.",
-                              error="Missing lse_companies.json", running=False,
-                              finished_at=datetime.now().isoformat())
+                              running=False, finished_at=datetime.now().isoformat())
                 return
 
-            # Get already-searched companies (within 7 days)
+            # Load DB-cached market caps into memory
+            global _mcap_cache
+            _mcap_cache.update(_get_cached_mcaps())
+            _direct_log(f"Loaded {len(_mcap_cache)} cached market caps from DB")
+
+            # Filter out already-searched companies
             already_searched = _get_searched_companies()
             remaining = [c for c in companies if c["name"] not in already_searched]
 
-            _direct_log(f"Loaded {len(companies)} companies. {len(already_searched)} already searched. {len(remaining)} remaining.")
+            _direct_log(f"{len(companies)} equities (filtered from full list). {len(already_searched)} already searched. {len(remaining)} remaining.")
             _direct_update(companies_total=len(companies))
 
             if not remaining:
-                _direct_log("All companies searched within last 7 days.")
                 _direct_update(
                     phase="done",
-                    phase_detail=f"All {len(companies)} companies searched. Will rescan after 7 days.",
-                    running=False, finished_at=datetime.now().isoformat(),
-                    progress_pct=100,
+                    phase_detail=f"All {len(companies)} companies searched. Rescan after 7 days.",
+                    running=False, finished_at=datetime.now().isoformat(), progress_pct=100,
                 )
                 return
 
@@ -433,132 +531,77 @@ def run_tr1_direct(max_market_cap=0):
             today_str = date.today().isoformat()
             grand_inserted = 0
             grand_duplicated = 0
-            grand_found = 0
             skipped_large = 0
-            skipped_no_data = 0
             companies_qualified = 0
             companies_with_tr1 = 0
+            checked = 0
 
-            for i, company in enumerate(remaining):
+            # Process companies in parallel batches
+            batch_idx = 0
+            while batch_idx < len(remaining):
                 # Check for stop
                 with _direct_lock:
                     if _direct_state["stop_requested"]:
-                        _direct_log("Stop requested. Saving progress.")
+                        _direct_log("Stop requested.")
                         break
 
-                name = company["name"]
-                ticker = company.get("ticker", "")
-                progress_pct = int(((len(already_searched) + i) / len(companies)) * 100)
+                batch = remaining[batch_idx:batch_idx + PARALLEL_WORKERS]
+                batch_idx += len(batch)
 
+                progress_pct = int(((len(already_searched) + checked) / len(companies)) * 100)
                 _direct_update(
-                    phase="filtering",
-                    phase_detail=f"Checking market cap ({i+1}/{len(remaining)}): {name[:35]}... | Qualified: {companies_qualified} | New: {grand_inserted}",
-                    companies_checked=i + 1,
+                    phase="extracting",
+                    phase_detail=f"Processing ({checked+1}-{checked+len(batch)}/{len(remaining)}): {batch[0]['name'][:30]}... | Qualified: {companies_qualified} | New: {grand_inserted}",
+                    companies_checked=checked,
                     progress_pct=progress_pct,
                 )
 
-                # Market cap check
-                if max_mcap > 0 and ticker:
-                    mcap_m, found = _get_market_cap(ticker, name)
-                    if found and mcap_m > max_mcap:
-                        skipped_large += 1
-                        _mark_searched(name, ticker, mcap_m, 0)
-                        _direct_update(skipped_large=skipped_large)
-                        continue
-                    elif not found:
-                        skipped_no_data += 1
-                        # Still search — might be a small company with no yfinance data
-                        _direct_update(skipped_no_data=skipped_no_data)
-                    time.sleep(0.2)
+                # Run batch in parallel
+                with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+                    futures = {
+                        executor.submit(_process_company, c, serper_key, max_mcap, today_str): c
+                        for c in batch
+                    }
 
-                companies_qualified += 1
-                _direct_update(
-                    phase="extracting",
-                    phase_detail=f"Searching TR1s ({i+1}/{len(remaining)}): {name[:35]}... | Qualified: {companies_qualified} | New: {grand_inserted}",
-                    companies_qualified=companies_qualified,
-                )
+                    for future in as_completed(futures):
+                        name, ticker, mcap_m, mcap_found, status, ins = future.result()
+                        checked += 1
 
-                # Search for TR1 filings
-                tr1_pages = _search_company_tr1(name, serper_key)
-                company_investors = 0
+                        _mark_searched(name, ticker, mcap_m, mcap_found, ins)
 
-                if tr1_pages:
-                    for page in tr1_pages:
-                        # Check for stop
-                        with _direct_lock:
-                            if _direct_state["stop_requested"]:
-                                break
-
-                        title, page_text = _fetch_page_text(page["url"])
-                        if not page_text or len(page_text.strip()) < 200:
-                            continue
-
-                        extracted = _extract_with_llm(page_text, page["url"], title, name)
-                        if extracted:
-                            investors = []
-                            for item in extracted:
-                                entity_type = item.get("entity_type", "Individual")
-                                inv_name = item.get("name", "").strip()
-                                issuer = item.get("issuer", "").strip() or name
-                                if not inv_name:
-                                    continue
-                                investors.append({
-                                    "name": inv_name,
-                                    "role": f"Shareholder ({item.get('holding_pct', 'N/A')})",
-                                    "company": entity_type,
-                                    "eis_company": issuer,
-                                    "sector": "Listed Company",
-                                    "amount": f"{item.get('num_shares', 'N/A')} shares",
-                                    "source_url": page["url"],
-                                    "source_type": "Filing",
-                                    "source_name": "LSE TR1 Filing",
-                                    "context_quote": f"TR1 ({entity_type}): {item.get('reason', 'Major holding')}. {item.get('holding_pct', 'N/A')} ({item.get('num_shares', 'N/A')} shares). {item.get('notification_date', '')}",
-                                    "linkedin_url": None,
-                                    "date_found": today_str,
-                                })
-
-                            if investors:
-                                ins, dup = _save_investors(investors)
+                        if status == "skipped_large":
+                            skipped_large += 1
+                        else:
+                            companies_qualified += 1
+                            if ins > 0:
+                                companies_with_tr1 += 1
                                 grand_inserted += ins
-                                grand_duplicated += dup
-                                grand_found += len(investors)
-                                company_investors += ins
-
-                        time.sleep(0.5)
-
-                if company_investors > 0:
-                    companies_with_tr1 += 1
-                    _direct_log(f"{name}: {company_investors} new investors")
-
-                mcap_val = _mcap_cache.get(ticker.upper(), (0, False))[0] if ticker else 0
-                _mark_searched(name, ticker, mcap_val, company_investors)
+                                _direct_log(f"{name}: {ins} new investors")
 
                 _direct_update(
-                    investors_found=grand_found,
                     investors_saved=grand_inserted,
-                    investors_duplicate=grand_duplicated,
+                    companies_qualified=companies_qualified,
                     companies_with_tr1=companies_with_tr1,
+                    skipped_large=skipped_large,
+                    companies_checked=checked,
                 )
 
             # Done
-            total_searched, recent_searched = _get_progress_stats()
+            total_searched, _ = _get_progress_stats()
             cap_msg = f" (under £{max_mcap}M)" if max_mcap > 0 else ""
-            _direct_log(f"Done. {grand_inserted} new investors from {companies_with_tr1} companies{cap_msg}. Skipped: {skipped_large} large, {skipped_no_data} no data.")
+            _direct_log(f"Done. {grand_inserted} new from {companies_with_tr1} companies{cap_msg}. Skipped {skipped_large} large caps.")
 
             _direct_update(
                 phase="done",
-                phase_detail=f"Done: {grand_inserted} new from {companies_with_tr1} companies{cap_msg}. {total_searched}/{len(companies)} total searched. Skipped {skipped_large} large caps.",
-                running=False,
-                finished_at=datetime.now().isoformat(),
+                phase_detail=f"Done: {grand_inserted} new from {companies_with_tr1} companies{cap_msg}. {total_searched}/{len(companies)} searched. Skipped {skipped_large} large.",
+                running=False, finished_at=datetime.now().isoformat(),
                 progress_pct=int((total_searched / len(companies)) * 100) if companies else 0,
             )
 
         except Exception as e:
             _direct_log(f"Error: {e}")
-            _direct_update(
-                phase="error", phase_detail=str(e), error=str(e),
-                running=False, finished_at=datetime.now().isoformat(),
-            )
+            _direct_update(phase="error", phase_detail=str(e), error=str(e),
+                          running=False, finished_at=datetime.now().isoformat())
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
