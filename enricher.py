@@ -117,6 +117,38 @@ def _search_fullenrich(api_key, first_name, last_name, company_name):
     return None
 
 
+def _init_enrich_table():
+    """Create table to track which investors have been checked."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS enrich_checked (
+            investor_id INTEGER PRIMARY KEY,
+            checked_at TIMESTAMP DEFAULT NOW(),
+            linkedin_found BOOLEAN DEFAULT FALSE
+        )
+    """)
+    db.commit()
+    cur.close()
+    db.close()
+
+
+def _mark_checked(investor_id, linkedin_found):
+    """Mark an investor as checked by FullEnrich."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        INSERT INTO enrich_checked (investor_id, checked_at, linkedin_found)
+        VALUES (%s, NOW(), %s)
+        ON CONFLICT (investor_id) DO UPDATE SET checked_at = NOW(), linkedin_found = EXCLUDED.linkedin_found
+    """, (investor_id, linkedin_found))
+    db.commit()
+    cur.close()
+    db.close()
+
+
 def _get_individuals_without_linkedin(limit=500):
     """Get individuals not yet checked by FullEnrich.
     Skips: organisations, those with LinkedIn already, and those already checked."""
