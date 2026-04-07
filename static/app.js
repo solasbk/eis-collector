@@ -94,8 +94,8 @@ async function fetchStats() {
 
     animateNumber("stat-total", data.total_investors);
     animateNumber("stat-new-week", data.new_this_week);
-    document.getElementById("stat-top-sector").textContent = data.top_sector;
-    animateNumber("stat-sources", data.sources_scanned);
+    animateNumber("stat-individuals", data.individual_count || 0);
+    animateNumber("stat-orgs", data.org_count || 0);
     animateNumber("stat-linkedin", data.linkedin_count || 0);
 
     // Populate filter options

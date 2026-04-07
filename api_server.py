@@ -513,6 +513,11 @@ def get_stats():
     cur.execute("SELECT COUNT(*) as c FROM investors WHERE linkedin_url IS NOT NULL AND linkedin_url != ''")
     linkedin_count = cur.fetchone()["c"]
 
+    # Individuals vs Organisations
+    cur.execute("SELECT COUNT(*) as c FROM investors WHERE company = 'Organisation'")
+    org_count = cur.fetchone()["c"]
+    individual_count = total - org_count
+
     cur.close()
 
     return {
@@ -521,6 +526,8 @@ def get_stats():
         "top_sector": top_sector,
         "sources_scanned": sources,
         "linkedin_count": linkedin_count,
+        "individual_count": individual_count,
+        "org_count": org_count,
         "sectors": sectors,
         "source_types": source_types,
         "source_names": source_names,
