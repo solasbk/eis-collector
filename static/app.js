@@ -46,6 +46,7 @@ var scanRows = {
   web: { bar: document.getElementById("status-web"), text: document.getElementById("status-web-text") },
   ch: { bar: document.getElementById("status-ch"), text: document.getElementById("status-ch-text") },
   tr1: { bar: document.getElementById("status-tr1"), text: document.getElementById("status-tr1-text") },
+  enrich: { bar: document.getElementById("status-enrich"), text: document.getElementById("status-enrich-text") },
 };
 
 /* ─── Theme Toggle ─── */
@@ -1093,6 +1094,79 @@ if (dailyBtn) {
 
 fetchDailyStatus();
 
+/* ─── LinkedIn Enrichment ─── */
+var runEnrichBtn = document.getElementById("run-enrich-btn");
+let enrichPollingInterval = null;
+
+if (runEnrichBtn) {
+  runEnrichBtn.addEventListener("click", async function () {
+    try {
+      runEnrichBtn.disabled = true;
+      var sp = runEnrichBtn.querySelector("span");
+      var sv = runEnrichBtn.querySelector("svg");
+      if (sp) sp.textContent = "Enriching...";
+      if (sv) sv.style.animation = "spin 1s linear infinite";
+
+      var res = await fetch(API + "/api/enrich", { method: "POST" });
+      var data = await res.json();
+
+      if (data.status === "already_running") {
+        showToast("Enrichment already running.");
+        startEnrichPolling();
+        return;
+      }
+      if (data.status === "started") {
+        showToast("LinkedIn enrichment started...", 5000);
+        updateStatusRow("enrich", { running: true, phase: "enriching", phase_detail: "Starting LinkedIn enrichment..." });
+        startEnrichPolling();
+      } else {
+        showToast(data.message || "Failed to start.");
+        resetEnrichButton();
+      }
+    } catch (err) {
+      showToast("Failed to start enrichment.");
+      resetEnrichButton();
+    }
+  });
+}
+
+function startEnrichPolling() {
+  if (enrichPollingInterval) clearInterval(enrichPollingInterval);
+  enrichPollingInterval = setInterval(pollEnrichStatus, 2000);
+}
+
+async function pollEnrichStatus() {
+  try {
+    var res = await fetch(API + "/api/enrich/status");
+    var status = await res.json();
+    updateStatusRow("enrich", status);
+
+    if (!status.running) {
+      clearInterval(enrichPollingInterval);
+      enrichPollingInterval = null;
+      resetEnrichButton();
+      if (status.phase === "done") {
+        showToast(status.phase_detail || "Enrichment complete.", 8000);
+        showScanLog(status);
+        fetchInvestors();
+        fetchScanHistory();
+      } else if (status.phase === "error") {
+        showToast("Enrichment error: " + (status.error || "Unknown"), 5000);
+        showScanLog(status);
+      }
+    }
+  } catch (err) {}
+}
+
+function resetEnrichButton() {
+  if (!runEnrichBtn) return;
+  runEnrichBtn.disabled = false;
+  var sp = runEnrichBtn.querySelector("span");
+  var sv = runEnrichBtn.querySelector("svg");
+  if (sp) sp.textContent = "LinkedIn";
+  if (sv) sv.style.animation = "";
+}
+
 /* ─── Scan History Dates ─── */
 async function fetchScanHistory() {
   try {
@@ -1110,6 +1184,8 @@ async function fetchScanHistory() {
     if (el) el.textContent = data.ch ? fmt(data.ch.last_run) : "Never";
     el = document.getElementById("last-tr1");
     if (el) el.textContent = data.tr1 ? fmt(data.tr1.last_run) : "Never";
+    el = document.getElementById("last-enrich");
+    if (el) el.textContent = data.enrich ? fmt(data.enrich.last_run) : "Never";
   } catch (e) {}
 }
 fetchScanHistory();

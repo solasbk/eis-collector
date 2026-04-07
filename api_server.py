@@ -646,6 +646,35 @@ def tr1_direct_status():
     return get_direct_status()
 
 
+# --- LinkedIn Enrichment Endpoints ---
+
+@app.post("/api/enrich")
+def trigger_enrichment():
+    from enricher import run_enrichment, get_enrich_status
+    status = get_enrich_status()
+    if status["running"]:
+        return {"status": "already_running", "message": "Enrichment already in progress."}
+    started = run_enrichment()
+    if started:
+        return {"status": "started", "message": "LinkedIn enrichment started."}
+    return {"status": "error", "message": "Failed to start enrichment."}
+
+
+@app.post("/api/enrich/stop")
+def stop_enrichment():
+    from enricher import stop_enrichment as _stop
+    stopped = _stop()
+    if stopped:
+        return {"status": "stopping", "message": "Stop requested."}
+    return {"status": "not_running"}
+
+
+@app.get("/api/enrich/status")
+def enrich_status():
+    from enricher import get_enrich_status
+    return get_enrich_status()
+
+
 # --- Scan History Endpoint ---
 
 @app.get("/api/scan-history")

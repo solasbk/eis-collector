@@ -70,6 +70,10 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12"/></svg>
           <span>Stop</span>
         </button>
+        <button class="btn btn-accent btn-sm" id="run-enrich-btn" title="Find LinkedIn profiles for individuals via FullEnrich">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 8a6 6 0 016 6v7h-4v-7a2 2 0 00-2-2 2 2 0 00-2 2v7h-4v-7a6 6 0 016-6z"/><rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/></svg>
+          <span>LinkedIn</span>
+        </button>
         <button class="btn btn-sm" id="daily-toggle-btn" title="Enable/disable daily auto-scan at 8am BST">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <span>Daily Off</span>
@@ -106,6 +110,12 @@
         <span class="scan-status-label" style="font-weight:600;min-width:36px;">TR1</span>
         <span class="scan-status-text" id="status-tr1-text">Ready</span>
         <span class="scan-status-date" id="last-tr1" style="margin-left:auto;font-size:11px;opacity:0.6;">--</span>
+      </div>
+      <div class="scan-status-bar" id="status-enrich">
+        <div class="scan-status-dot"></div>
+        <span class="scan-status-label" style="font-weight:600;min-width:36px;">LI</span>
+        <span class="scan-status-text" id="status-enrich-text">Ready</span>
+        <span class="scan-status-date" id="last-enrich" style="margin-left:auto;font-size:11px;opacity:0.6;">--</span>
       </div>
     </div>
 
