@@ -303,7 +303,7 @@ async function openDetail(id) {
     if (inv.linkedin_url) {
       html += '<div class="detail-field">';
       html += '<div class="detail-label">LinkedIn</div>';
-      html += '<div class="detail-value"><a href="' + escapeHtml(inv.linkedin_url) + '" target="_blank" rel="noopener noreferrer">View Profile</a></div>';
+      html += '<div class="detail-value"><a href="' + escapeHtml(inv.linkedin_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(inv.linkedin_url) + '</a></div>';
       html += '</div>';
     }
 
