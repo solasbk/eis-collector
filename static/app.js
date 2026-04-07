@@ -272,7 +272,7 @@ async function openDetail(id) {
     }
 
     html += '<div class="detail-field">';
-    html += '<div class="detail-label">EIS Company</div>';
+    html += '<div class="detail-label">Company / Issuer</div>';
     html += '<div class="detail-value">' + escapeHtml(inv.eis_company || "—") + '</div>';
     html += '</div>';
 
@@ -376,7 +376,7 @@ async function exportCSV() {
     }
 
     // Build CSV
-    var headers = ["Name", "Role", "Company", "EIS Company", "Sector", "Amount", "Source", "Source URL", "Source Type", "Date Found", "LinkedIn"];
+    var headers = ["Name", "Role", "Company", "Company / Issuer", "Sector", "Amount", "Source", "Source URL", "Source Type", "Date Found", "LinkedIn"];
     var rows = allInvestors.map(function (inv) {
       return [
         csvEscape(inv.name),
