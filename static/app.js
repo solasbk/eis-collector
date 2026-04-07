@@ -41,9 +41,12 @@ const filterOrigin = document.getElementById("filter-origin");
 const filterEntityType = document.getElementById("filter-entity-type");
 const filterHolding = document.getElementById("filter-holding");
 const toast = document.getElementById("toast");
-const scanStatusBar = document.getElementById("scan-status-bar");
-const scanStatusDot = document.getElementById("scan-status-dot");
-const scanStatusText = document.getElementById("scan-status-text");
+// Per-scan status elements
+var scanRows = {
+  web: { bar: document.getElementById("status-web"), text: document.getElementById("status-web-text") },
+  ch: { bar: document.getElementById("status-ch"), text: document.getElementById("status-ch-text") },
+  tr1: { bar: document.getElementById("status-tr1"), text: document.getElementById("status-tr1-text") },
+};
 
 /* ─── Theme Toggle ─── */
 (function initTheme() {
@@ -597,38 +600,41 @@ function updateScanProgress(status) {
   } else if (status.phase === "saving") {
     btnSpan.textContent = "Saving...";
   }
-
-  // Update the status bar
-  updateStatusBar(status);
+  updateStatusRow("web", status);
 }
 
-function updateStatusBar(status) {
-  if (!scanStatusBar) return;
+function updateStatusRow(scanType, status) {
+  var row = scanRows[scanType];
+  if (!row || !row.bar) return;
 
-  // Remove all state classes
-  scanStatusBar.classList.remove("active", "error", "success");
+  row.bar.classList.remove("active", "error", "success");
 
   if (status.running) {
-    scanStatusBar.classList.add("active");
-    scanStatusText.textContent = status.phase_detail || "Scan in progress...";
+    row.bar.classList.add("active");
+    row.text.textContent = status.phase_detail || "In progress...";
   } else if (status.phase === "done") {
-    scanStatusBar.classList.add("success");
-    scanStatusText.textContent = status.phase_detail || "Scan complete.";
-    // Fade back to idle after 30 seconds
+    row.bar.classList.add("success");
+    row.text.textContent = status.phase_detail || "Complete.";
     setTimeout(function() {
-      scanStatusBar.classList.remove("success");
-      scanStatusText.textContent = "Ready";
+      row.bar.classList.remove("success");
+      row.text.textContent = "Ready";
     }, 30000);
   } else if (status.phase === "error") {
-    scanStatusBar.classList.add("error");
-    scanStatusText.textContent = "Error: " + (status.phase_detail || status.error || "Unknown error");
+    row.bar.classList.add("error");
+    row.text.textContent = "Error: " + (status.phase_detail || status.error || "Unknown");
     setTimeout(function() {
-      scanStatusBar.classList.remove("error");
-      scanStatusText.textContent = "Ready";
+      row.bar.classList.remove("error");
+      row.text.textContent = "Ready";
     }, 30000);
   } else {
-    scanStatusText.textContent = "Ready";
+    row.text.textContent = "Ready";
   }
+}
+
+// Legacy wrapper for old calls
+function updateStatusBar(status) {
+  // Guess which row based on context
+  updateStatusRow("tr1", status);
 }
 
 /* ─── Scan Log Display ─── */
@@ -884,7 +890,7 @@ if (runDirectBtn) {
       }
       if (data.status === "started") {
         showToast(data.message || "TR1 scan started...", 5000);
-        updateStatusBar({ running: true, phase: "scanning", phase_detail: "Starting TR1 scan..." });
+        updateStatusRow("tr1", { running: true, phase: "scanning", phase_detail: "Starting TR1 scan..." });
         startDirectPolling();
       } else {
         showToast(data.message || "Failed to start.");
@@ -928,7 +934,7 @@ async function pollDirectStatus() {
 
     // Always update status bar if scan has started (phase != idle)
     if (status.phase !== "idle") {
-      updateStatusBar(status);
+      updateStatusRow("tr1", status);
     }
 
     if (!status.running && directPollCount > 3) {
@@ -1244,7 +1250,7 @@ function resetTr1Button() {
     if (status.running) {
       setScanButtonState("scanning");
       runCollectionBtn.disabled = true;
-      updateStatusBar(status);
+      updateStatusRow("web", status);
       startScanPolling();
     }
   } catch (e) {}
@@ -1259,22 +1265,18 @@ function resetTr1Button() {
         if (s) s.textContent = "Scanning...";
         if (v) v.style.animation = "spin 1s linear infinite";
       }
-      updateStatusBar(chStatus);
+      updateStatusRow("ch", chStatus);
       startChPolling();
     }
   } catch (e) {}
   try {
-    var res3 = await fetch(API + "/api/tr1-scan/status");
+    var res3 = await fetch(API + "/api/tr1-direct/status");
     var tr1Status = await res3.json();
     if (tr1Status.running) {
-      if (runTr1Btn) {
-        runTr1Btn.disabled = true;
-        var st = runTr1Btn.querySelector("span");
-        var sv = runTr1Btn.querySelector("svg");
-        if (st) st.textContent = "Scanning...";
-        if (sv) sv.style.animation = "spin 1s linear infinite";
-      }
-      updateStatusBar(tr1Status);
+      runDirectBtn.disabled = true;
+      runDirectBtn.style.display = "none";
+      stopDirectBtn.style.display = "";
+      updateStatusRow("tr1", tr1Status);
       startTr1Polling();
     }
   } catch (e) {}

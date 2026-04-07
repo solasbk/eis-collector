@@ -87,17 +87,26 @@
     <!-- Toast notification -->
     <div class="toast" id="toast" aria-live="polite"></div>
 
-    <!-- Last scan dates -->
-    <div class="scan-dates" id="scan-dates" style="display:flex;gap:16px;padding:4px 16px;font-size:11px;color:var(--color-text-faint);">
-      <span>Web: <span id="last-web">--</span></span>
-      <span>CH: <span id="last-ch">--</span></span>
-      <span>TR1: <span id="last-tr1">--</span></span>
-    </div>
-
-    <!-- Live scan status bar -->
-    <div class="scan-status-bar" id="scan-status-bar">
-      <div class="scan-status-dot" id="scan-status-dot"></div>
-      <span class="scan-status-text" id="scan-status-text">Ready</span>
+    <!-- Per-scan status rows -->
+    <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:var(--space-4);">
+      <div class="scan-status-bar" id="status-web">
+        <div class="scan-status-dot"></div>
+        <span class="scan-status-label" style="font-weight:600;min-width:36px;">Web</span>
+        <span class="scan-status-text" id="status-web-text">Ready</span>
+        <span class="scan-status-date" id="last-web" style="margin-left:auto;font-size:11px;opacity:0.6;">--</span>
+      </div>
+      <div class="scan-status-bar" id="status-ch">
+        <div class="scan-status-dot"></div>
+        <span class="scan-status-label" style="font-weight:600;min-width:36px;">CH</span>
+        <span class="scan-status-text" id="status-ch-text">Ready</span>
+        <span class="scan-status-date" id="last-ch" style="margin-left:auto;font-size:11px;opacity:0.6;">--</span>
+      </div>
+      <div class="scan-status-bar" id="status-tr1">
+        <div class="scan-status-dot"></div>
+        <span class="scan-status-label" style="font-weight:600;min-width:36px;">TR1</span>
+        <span class="scan-status-text" id="status-tr1-text">Ready</span>
+        <span class="scan-status-date" id="last-tr1" style="margin-left:auto;font-size:11px;opacity:0.6;">--</span>
+      </div>
     </div>
 
     <!-- KPI Stats Row -->
