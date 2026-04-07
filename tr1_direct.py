@@ -150,6 +150,18 @@ def _get_searched_companies():
     return result
 
 
+def _get_recently_searched(hours=24):
+    """Get companies searched within the last N hours."""
+    from api_server import get_db
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(f"SELECT company_name FROM tr1_company_progress WHERE last_searched > NOW() - INTERVAL '{hours} hours'")
+    result = set(row["company_name"] for row in cur.fetchall())
+    cur.close()
+    db.close()
+    return result
+
+
 def _get_cached_mcaps():
     """Load market cap cache from database."""
     from api_server import get_db
@@ -471,7 +483,7 @@ def _process_company(company, serper_key, max_mcap, today_str):
 
 # ── Main entry point ──────────────────────────────────────────────
 
-def run_tr1_direct(max_market_cap=0):
+def run_tr1_direct(max_market_cap=0, recent_only=False):
     with _direct_lock:
         if _direct_state["running"]:
             return False
@@ -513,7 +525,12 @@ def run_tr1_direct(max_market_cap=0):
             _direct_log(f"Loaded {len(_mcap_cache)} cached market caps from DB")
 
             # Filter out already-searched companies
-            already_searched = _get_searched_companies()
+            if recent_only:
+                # Recent mode: only rescan companies searched > 24 hours ago
+                already_searched = _get_recently_searched(hours=24)
+                _direct_log(f"Recent mode: skipping {len(already_searched)} companies searched in last 24h")
+            else:
+                already_searched = _get_searched_companies()  # 7-day window
             remaining = [c for c in companies if c["name"] not in already_searched]
 
             _direct_log(f"{len(companies)} equities (filtered from full list). {len(already_searched)} already searched. {len(remaining)} remaining.")

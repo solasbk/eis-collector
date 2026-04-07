@@ -210,8 +210,8 @@ def _run_daily_scans():
     # 2. Companies House scan
     with _daily_lock:
         _daily_scan_state["status"] = "running_ch"
-    print("[daily] Starting Companies House scan...")
-    run_ch_scan()
+    print("[daily] Starting Companies House scan (recent)...")
+    run_ch_scan(recent_only=True)
     while get_ch_scan_status()["running"]:
         _time.sleep(5)
     ch_status = get_ch_scan_status()
@@ -224,8 +224,8 @@ def _run_daily_scans():
     from tr1_direct import run_tr1_direct, get_direct_status
     with _daily_lock:
         _daily_scan_state["status"] = "running_tr1"
-    print("[daily] Starting TR1 direct Investegate scan...")
-    run_tr1_direct()
+    print("[daily] Starting TR1 direct scan (recent)...")
+    run_tr1_direct(recent_only=True)
     while get_direct_status()["running"]:
         _time.sleep(5)
     direct_status = get_direct_status()
@@ -557,15 +557,16 @@ def scan_status():
 
 
 @app.post("/api/ch-scan")
-def trigger_ch_scan():
+def trigger_ch_scan(recent_only: bool = Query(False)):
     from ch_scanner import run_ch_scan, get_ch_scan_status
     status = get_ch_scan_status()
     if status["running"]:
         return {"status": "already_running", "message": "A Companies House scan is already in progress."}
-    started = run_ch_scan()
+    started = run_ch_scan(recent_only=recent_only)
+    mode = "recent" if recent_only else "full"
     if started:
         _watch_and_record("ch", get_ch_scan_status)
-        return {"status": "started", "message": "Companies House scan started. Poll /api/ch-scan/status for progress."}
+        return {"status": "started", "message": f"Companies House {mode} scan started."}
     return {"status": "error", "message": "Failed to start Companies House scan."}
 
 
@@ -616,16 +617,17 @@ def tr1_sweep_status():
 # --- TR1 Direct Endpoints ---
 
 @app.post("/api/tr1-direct")
-def trigger_tr1_direct(max_market_cap: int = Query(0, ge=0)):
+def trigger_tr1_direct(max_market_cap: int = Query(0, ge=0), recent_only: bool = Query(False)):
     from tr1_direct import run_tr1_direct, get_direct_status
     status = get_direct_status()
     if status["running"]:
         return {"status": "already_running", "message": "TR1 direct scan already in progress."}
-    started = run_tr1_direct(max_market_cap=max_market_cap)
-    cap_msg = f" (companies under \u00a3{max_market_cap:,}M)" if max_market_cap > 0 else ""
+    started = run_tr1_direct(max_market_cap=max_market_cap, recent_only=recent_only)
+    cap_msg = f" (under \u00a3{max_market_cap:,}M)" if max_market_cap > 0 else ""
+    mode = "recent" if recent_only else "full"
     if started:
         _watch_and_record("tr1", get_direct_status)
-        return {"status": "started", "message": f"TR1 scan started{cap_msg}."}
+        return {"status": "started", "message": f"TR1 {mode} scan started{cap_msg}."}
     return {"status": "error", "message": "Failed to start TR1 direct scan."}
 
 

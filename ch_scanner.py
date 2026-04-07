@@ -9,7 +9,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 import httpx
@@ -259,8 +259,30 @@ def _save_ch_investors(investors):
 
 # ── Main scan entry point ─────────────────────────────────────────
 
-def run_ch_scan():
-    """Execute a Companies House PSC scan. Runs in a background thread."""
+def _get_recent_eis_companies(since_date):
+    """Get EIS company names added to DB since a given date."""
+    from api_server import get_db
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute(
+            "SELECT DISTINCT eis_company FROM investors WHERE eis_company IS NOT NULL AND eis_company != '' AND date_found >= %s",
+            (since_date,)
+        )
+        result = [row["eis_company"] for row in cur.fetchall()]
+        cur.close()
+        db.close()
+        return result
+    except Exception:
+        return []
+
+
+def run_ch_scan(recent_only=False):
+    """Execute a Companies House PSC scan.
+    
+    Args:
+        recent_only: If True, only search companies added since last CH scan.
+    """
     with _ch_lock:
         if _ch_state["running"]:
             return False
@@ -296,13 +318,29 @@ def run_ch_scan():
             _ch_log("Companies House API key found.")
             today = date.today().isoformat()
 
-            # Step 1: Build search list from seed + database
-            _ch_update(phase="searching", phase_detail="Building company search list...")
-            db_companies = _get_eis_companies_from_db()
-            _ch_log(f"Found {len(db_companies)} company names from existing database")
-
-            # Combine seed list + database company names, deduplicate
-            all_searches = list(set(SEED_COMPANY_SEARCHES + db_companies))
+            # Step 1: Build search list
+            if recent_only:
+                # Only search companies added since last CH scan
+                _ch_update(phase="searching", phase_detail="Building recent company list...")
+                try:
+                    from api_server import _get_last_scan_dates
+                    scan_dates = _get_last_scan_dates()
+                    last_ch = scan_dates.get("ch", {}).get("last_run", "")
+                    if last_ch:
+                        since = last_ch[:10]  # YYYY-MM-DD
+                    else:
+                        since = (date.today() - timedelta(days=7)).isoformat()
+                except Exception:
+                    since = (date.today() - timedelta(days=7)).isoformat()
+                
+                db_companies = _get_recent_eis_companies(since)
+                _ch_log(f"Recent mode: {len(db_companies)} new companies since {since}")
+                all_searches = list(set(db_companies))
+            else:
+                _ch_update(phase="searching", phase_detail="Building company search list...")
+                db_companies = _get_eis_companies_from_db()
+                _ch_log(f"Found {len(db_companies)} company names from existing database")
+                all_searches = list(set(SEED_COMPANY_SEARCHES + db_companies))
             _ch_log(f"Total search terms: {len(all_searches)}")
 
             # Step 2: Search Companies House for each company

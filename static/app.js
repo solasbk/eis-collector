@@ -785,7 +785,8 @@ async function runChScan() {
     if (btnSpan) btnSpan.textContent = "Scanning...";
     if (btnSvg) btnSvg.style.animation = "spin 1s linear infinite";
 
-    var res = await fetch(API + "/api/ch-scan", { method: "POST" });
+    var recentCH = document.getElementById("recent-toggle").checked;
+    var res = await fetch(API + "/api/ch-scan?recent_only=" + recentCH, { method: "POST" });
     var data = await res.json();
 
     if (data.status === "already_running") {
@@ -871,7 +872,8 @@ if (runDirectBtn) {
       if (sv) sv.style.animation = "spin 1s linear infinite";
 
       var mcap = parseInt(tr1McapInput.value) || 0;
-      var url = API + "/api/tr1-direct?max_market_cap=" + mcap;
+      var recentTR1 = document.getElementById("recent-toggle").checked;
+      var url = API + "/api/tr1-direct?max_market_cap=" + mcap + "&recent_only=" + recentTR1;
       var res = await fetch(url, { method: "POST" });
       var data = await res.json();
 
