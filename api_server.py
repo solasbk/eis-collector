@@ -112,6 +112,54 @@ def seed_db(db):
     print("[seed] No seed_data.json found. Database starts empty.")
 
 
+# --- Scan History Tracking ---
+
+def _init_scan_history():
+    """Create table to track when each scan type last ran."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id SERIAL PRIMARY KEY,
+            scan_type TEXT NOT NULL,
+            started_at TIMESTAMP NOT NULL,
+            finished_at TIMESTAMP,
+            result TEXT
+        )
+    """)
+    db.commit()
+    cur.close()
+    db.close()
+
+
+def _record_scan(scan_type, result=""):
+    """Record that a scan just completed."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        INSERT INTO scan_history (scan_type, started_at, finished_at, result)
+        VALUES (%s, NOW(), NOW(), %s)
+    """, (scan_type, result))
+    db.commit()
+    cur.close()
+    db.close()
+
+
+def _get_last_scan_dates():
+    """Get the last run time for each scan type."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT DISTINCT ON (scan_type) scan_type, finished_at, result
+        FROM scan_history
+        ORDER BY scan_type, finished_at DESC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    db.close()
+    return {row["scan_type"]: {"last_run": row["finished_at"].isoformat() if row["finished_at"] else None, "result": row["result"]} for row in rows}
+
+
 # --- Daily Auto-Scan Scheduler ---
 
 import threading
@@ -155,6 +203,7 @@ def _run_daily_scans():
         _time.sleep(5)
     web_status = get_scan_status()
     results["web"] = web_status.get("phase_detail", "")
+    _record_scan("web", results["web"])
     print(f"[daily] Web scan done: {results['web']}")
     _time.sleep(5)
 
@@ -167,6 +216,7 @@ def _run_daily_scans():
         _time.sleep(5)
     ch_status = get_ch_scan_status()
     results["ch"] = ch_status.get("phase_detail", "")
+    _record_scan("ch", results["ch"])
     print(f"[daily] CH scan done: {results['ch']}")
     _time.sleep(5)
 
@@ -180,6 +230,7 @@ def _run_daily_scans():
         _time.sleep(5)
     direct_status = get_direct_status()
     results["tr1"] = direct_status.get("phase_detail", "")
+    _record_scan("tr1", results["tr1"])
     print(f"[daily] TR1 direct done: {results['tr1']}")
 
     return results
@@ -243,6 +294,7 @@ print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') els
 db = get_db()
 init_db(db)
 seed_db(db)
+_init_scan_history()
 
 # Log the final count after seeding
 _cur = db.cursor()
@@ -470,6 +522,21 @@ def get_stats():
     }
 
 
+def _watch_and_record(scan_type, status_fn, poll_interval=5):
+    """Background thread that waits for a scan to finish and records it."""
+    def _watch():
+        _time.sleep(3)  # let scan start
+        while True:
+            s = status_fn()
+            if not s.get("running", False):
+                result = s.get("phase_detail", "")
+                if s.get("phase") in ("done", "error"):
+                    _record_scan(scan_type, result)
+                break
+            _time.sleep(poll_interval)
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 @app.post("/api/scan")
 def trigger_scan():
     from scanner import run_scan, get_scan_status
@@ -478,6 +545,7 @@ def trigger_scan():
         return {"status": "already_running", "message": "A scan is already in progress."}
     started = run_scan()
     if started:
+        _watch_and_record("web", get_scan_status)
         return {"status": "started", "message": "Scan started. Poll /api/scan/status for progress."}
     return {"status": "error", "message": "Failed to start scan."}
 
@@ -496,6 +564,7 @@ def trigger_ch_scan():
         return {"status": "already_running", "message": "A Companies House scan is already in progress."}
     started = run_ch_scan()
     if started:
+        _watch_and_record("ch", get_ch_scan_status)
         return {"status": "started", "message": "Companies House scan started. Poll /api/ch-scan/status for progress."}
     return {"status": "error", "message": "Failed to start Companies House scan."}
 
@@ -555,6 +624,7 @@ def trigger_tr1_direct(max_market_cap: int = Query(0, ge=0)):
     started = run_tr1_direct(max_market_cap=max_market_cap)
     cap_msg = f" (companies under \u00a3{max_market_cap:,}M)" if max_market_cap > 0 else ""
     if started:
+        _watch_and_record("tr1", get_direct_status)
         return {"status": "started", "message": f"TR1 scan started{cap_msg}."}
     return {"status": "error", "message": "Failed to start TR1 direct scan."}
 
@@ -572,6 +642,13 @@ def stop_tr1_direct():
 def tr1_direct_status():
     from tr1_direct import get_direct_status
     return get_direct_status()
+
+
+# --- Scan History Endpoint ---
+
+@app.get("/api/scan-history")
+def scan_history():
+    return _get_last_scan_dates()
 
 
 # --- Daily Update Endpoints ---

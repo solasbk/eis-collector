@@ -562,6 +562,7 @@ async function pollScanStatus() {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else if (status.phase === "error") {
         showToast("Scan error: " + (status.error || "Unknown error"), 5000);
         showScanLog(status);
@@ -832,6 +833,7 @@ async function pollChStatus() {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else if (status.phase === "error") {
         showToast("CH scan error: " + (status.error || "Unknown error"), 5000);
         showScanLog(status);
@@ -938,6 +940,7 @@ async function pollDirectStatus() {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else if (status.phase === "error") {
         showToast("TR1 scan error: " + (status.error || "Unknown"), 5000);
         showScanLog(status);
@@ -1017,6 +1020,7 @@ async function pollSweepStatus() {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else if (status.phase === "error") {
         showToast("Sweep error: " + (status.error || "Unknown"), 5000);
         showScanLog(status);
@@ -1085,6 +1089,27 @@ if (dailyBtn) {
 
 fetchDailyStatus();
 
+/* ─── Scan History Dates ─── */
+async function fetchScanHistory() {
+  try {
+    var res = await fetch(API + "/api/scan-history");
+    var data = await res.json();
+    var fmt = function(iso) {
+      if (!iso) return "--";
+      var d = new Date(iso);
+      return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    };
+    var el;
+    el = document.getElementById("last-web");
+    if (el) el.textContent = data.web ? fmt(data.web.last_run) : "Never";
+    el = document.getElementById("last-ch");
+    if (el) el.textContent = data.ch ? fmt(data.ch.last_run) : "Never";
+    el = document.getElementById("last-tr1");
+    if (el) el.textContent = data.tr1 ? fmt(data.tr1.last_run) : "Never";
+  } catch (e) {}
+}
+fetchScanHistory();
+
 /* ─── Excel Import ─── */
 var importFileInput = document.getElementById("import-file-input");
 var importBtn = document.getElementById("import-btn");
@@ -1114,6 +1139,7 @@ if (importFileInput) {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else {
         showToast("Import error: " + (data.detail || "Unknown error"), 5000);
       }
@@ -1188,6 +1214,7 @@ async function pollTr1Status() {
         fetchStats();
         fetchInvestors();
         updateExportNewBadge();
+        fetchScanHistory();
       } else if (status.phase === "error") {
         showToast("TR1 scan error: " + (status.error || "Unknown error"), 5000);
         showScanLog(status);
