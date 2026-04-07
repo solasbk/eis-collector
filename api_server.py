@@ -509,6 +509,10 @@ def get_stats():
     )
     source_names = [r["source_name"] for r in cur.fetchall()]
 
+    # LinkedIn count
+    cur.execute("SELECT COUNT(*) as c FROM investors WHERE linkedin_url IS NOT NULL AND linkedin_url != ''")
+    linkedin_count = cur.fetchone()["c"]
+
     cur.close()
 
     return {
@@ -516,6 +520,7 @@ def get_stats():
         "new_this_week": new_this_week,
         "top_sector": top_sector,
         "sources_scanned": sources,
+        "linkedin_count": linkedin_count,
         "sectors": sectors,
         "source_types": source_types,
         "source_names": source_names,

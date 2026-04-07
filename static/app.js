@@ -96,6 +96,7 @@ async function fetchStats() {
     animateNumber("stat-new-week", data.new_this_week);
     document.getElementById("stat-top-sector").textContent = data.top_sector;
     animateNumber("stat-sources", data.sources_scanned);
+    animateNumber("stat-linkedin", data.linkedin_count || 0);
 
     // Populate filter options
     sectors = data.sectors || [];
