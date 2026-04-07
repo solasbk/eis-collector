@@ -676,12 +676,12 @@ def research_investor(investor_id: int):
     if not inv:
         raise HTTPException(status_code=404, detail="Investor not found")
 
-    name = inv["name"]
-    company = inv.get("eis_company", "")
-    role = inv.get("role", "")
-    linkedin = inv.get("linkedin_url", "")
-    source = inv.get("source_name", "")
-    context = inv.get("context_quote", "")
+    name = inv["name"] or ""
+    company = inv.get("eis_company") or ""
+    role = inv.get("role") or ""
+    linkedin = inv.get("linkedin_url") or ""
+    source = inv.get("source_name") or ""
+    context = (inv.get("context_quote") or "")[:300]  # Truncate long context
 
     # Build research prompt
     prompt = f"""Research this UK investor and provide a concise professional summary.
@@ -731,7 +731,9 @@ Format as plain text paragraphs, not markdown."""
                 cur2.close()
             return {"summary": text.strip()}
         else:
-            return {"summary": f"Gemini returned {resp.status_code}. Could not generate summary."}
+            err_body = resp.text[:200] if resp.text else "no details"
+            print(f"[research] Gemini {resp.status_code}: {err_body}")
+            return {"summary": f"Gemini returned {resp.status_code}: {err_body}"}
     except Exception as e:
         return {"summary": f"Research failed: {str(e)}"}
 
