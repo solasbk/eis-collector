@@ -172,6 +172,8 @@ def run_enrichment():
 
     def _run():
         try:
+            _init_enrich_table()
+
             api_key = os.environ.get("FULLENRICH_API_KEY", "")
             if not api_key:
                 _enrich_log("FULLENRICH_API_KEY not set.")
@@ -218,9 +220,11 @@ def run_enrichment():
 
                 if linkedin_url:
                     _update_linkedin(inv["id"], linkedin_url)
+                    _mark_checked(inv["id"], True)
                     found += 1
                     _enrich_log(f"Found: {first} {last} → {linkedin_url}")
                 else:
+                    _mark_checked(inv["id"], False)
                     not_found += 1
 
                 _enrich_update(found=found, not_found=not_found)
