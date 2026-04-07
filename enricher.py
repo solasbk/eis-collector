@@ -217,10 +217,10 @@ def run_enrichment():
                 return
 
             # Get individuals without LinkedIn
-            investors = _get_individuals_without_linkedin(limit=500)
+            investors = _get_individuals_without_linkedin(limit=100)
             if not investors:
                 _enrich_update(
-                    phase="done", phase_detail="All individuals already have LinkedIn profiles.",
+                    phase="done", phase_detail="All individuals have been checked with FullEnrich. New investors will be checked on next run.",
                     running=False, finished_at=datetime.now().isoformat(),
                 )
                 return
