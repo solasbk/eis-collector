@@ -118,17 +118,20 @@ def _search_fullenrich(api_key, first_name, last_name, company_name):
 
 
 def _get_individuals_without_linkedin(limit=500):
-    """Get individuals from DB that don't have a LinkedIn URL yet."""
+    """Get individuals not yet checked by FullEnrich.
+    Skips: organisations, those with LinkedIn already, and those already checked."""
     from api_server import get_db
     db = get_db()
     cur = db.cursor()
     cur.execute("""
-        SELECT id, name, company, eis_company
-        FROM investors
-        WHERE (linkedin_url IS NULL OR linkedin_url = '')
-        AND (company != 'Organisation' OR company IS NULL)
-        AND name IS NOT NULL AND name != ''
-        ORDER BY date_found DESC
+        SELECT i.id, i.name, i.company, i.eis_company
+        FROM investors i
+        LEFT JOIN enrich_checked ec ON i.id = ec.investor_id
+        WHERE (i.linkedin_url IS NULL OR i.linkedin_url = '')
+        AND (i.company != 'Organisation' OR i.company IS NULL)
+        AND i.name IS NOT NULL AND i.name != ''
+        AND ec.investor_id IS NULL
+        ORDER BY i.date_found DESC
         LIMIT %s
     """, (limit,))
     rows = cur.fetchall()
