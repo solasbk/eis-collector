@@ -308,12 +308,12 @@ async function openDetail(id) {
     }
 
     html += '<div class="detail-field" style="margin-top:8px;">';
-    html += '<button class="btn btn-primary btn-sm" onclick="researchInvestor(' + inv.id + ', this)" style="width:100%;">Research Investor</button>';
+    html += '<button class="btn btn-primary btn-sm" onclick="researchInvestor(' + inv.id + ', this)" style="width:100%;">' + (inv.bio ? 'Refresh Research' : 'Research Investor') + '</button>';
     html += '</div>';
 
-    html += '<div class="detail-field" id="research-result-' + inv.id + '" style="display:none;">';
+    html += '<div class="detail-field" id="research-result-' + inv.id + '"' + (inv.bio ? '' : ' style="display:none;"') + '>';
     html += '<div class="detail-label">Investor Summary</div>';
-    html += '<div class="detail-value" id="research-text-' + inv.id + '" style="white-space:pre-wrap;line-height:1.5;"></div>';
+    html += '<div class="detail-value" id="research-text-' + inv.id + '" style="white-space:pre-wrap;line-height:1.5;">' + escapeHtml(inv.bio || '') + '</div>';
     html += '</div>';
 
     if (inv.context_quote) {

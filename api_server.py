@@ -52,9 +52,12 @@ def init_db(db):
             context_quote TEXT,
             linkedin_url TEXT,
             date_found TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            bio TEXT
         )
     """)
+    # Add bio column for databases created before this schema update
+    cur.execute("ALTER TABLE investors ADD COLUMN IF NOT EXISTS bio TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS export_log (
             id SERIAL PRIMARY KEY,
@@ -717,11 +720,11 @@ Format as plain text paragraphs, not markdown."""
         if resp.status_code == 200:
             data = resp.json()
             text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            # Save summary to context_quote for persistence
+            # Save summary to bio field
             if text:
                 cur2 = db.cursor()
                 cur2.execute(
-                    "UPDATE investors SET context_quote = %s WHERE id = %s",
+                    "UPDATE investors SET bio = %s WHERE id = %s",
                     (text.strip(), investor_id)
                 )
                 db.commit()
