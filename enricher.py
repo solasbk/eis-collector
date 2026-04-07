@@ -81,12 +81,11 @@ def _search_fullenrich(api_key, first_name, last_name, company_name):
         payload = {
             "limit": 1,
             "person_names": [{"value": f"{first_name} {last_name}", "exact_match": False, "exclude": False}],
-            "person_locations": [{"value": "United Kingdom", "exact_match": False, "exclude": False}],
+            "person_locations": [
+                {"value": "United Kingdom", "exact_match": False, "exclude": False},
+                {"value": "Ireland", "exact_match": False, "exclude": False},
+            ],
         }
-        
-        # Add company filter if available
-        if company_name and company_name.lower() not in ("independent", "unknown", "various", ""):
-            payload["current_company_names"] = [{"value": company_name, "exact_match": False, "exclude": False}]
         
         resp = httpx.post(
             FULLENRICH_API,
