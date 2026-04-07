@@ -520,7 +520,7 @@ async function runCollection() {
 
     if (data.status === "started") {
       showToast("Scan started. Searching for EIS investors...", 5000);
-      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting web search..." });
+      updateStatusRow("web", { running: true, phase: "searching", phase_detail: "Starting web search..." });
       startScanPolling();
     } else {
       showToast(data.message || "Failed to start scan.");
@@ -631,11 +631,6 @@ function updateStatusRow(scanType, status) {
   }
 }
 
-// Legacy wrapper for old calls
-function updateStatusBar(status) {
-  // Guess which row based on context
-  updateStatusRow("tr1", status);
-}
 
 /* ─── Scan Log Display ─── */
 function showScanLog(status) {
@@ -803,7 +798,7 @@ async function runChScan() {
 
     if (data.status === "started") {
       showToast("Companies House scan started...", 5000);
-      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting Companies House scan..." });
+      updateStatusRow("ch", { running: true, phase: "searching", phase_detail: "Starting Companies House scan..." });
       startChPolling();
     } else {
       showToast(data.message || "Failed to start CH scan.");
@@ -827,7 +822,7 @@ async function pollChStatus() {
     var status = await res.json();
 
     // Update status bar
-    updateStatusBar(status);
+    updateStatusRow("ch", status);
 
     if (!status.running) {
       clearInterval(chPollingInterval);
@@ -994,7 +989,7 @@ if (runSweepBtn) {
       }
       if (data.status === "started") {
         showToast("TR1 company sweep started (200 companies per batch)...", 5000);
-        updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting TR1 company sweep..." });
+        updateStatusRow("tr1", { running: true, phase: "searching", phase_detail: "Starting TR1 company sweep..." });
         startSweepPolling();
       } else {
         showToast(data.message || "Failed to start sweep.");
@@ -1016,7 +1011,7 @@ async function pollSweepStatus() {
   try {
     var res = await fetch(API + "/api/tr1-sweep/status");
     var status = await res.json();
-    updateStatusBar(status);
+    updateStatusRow("tr1", status);
 
     if (!status.running) {
       clearInterval(sweepPollingInterval);
@@ -1057,7 +1052,8 @@ async function fetchDailyStatus() {
     dailyEnabled = data.enabled;
     updateDailyButton();
     if (data.enabled && data.status && data.status.startsWith("running")) {
-      updateStatusBar({ running: true, phase: "extracting", phase_detail: "Daily auto-scan: " + data.status.replace("running_", "") + " scan in progress..." });
+      var dailyScanType = data.status.replace("running_", "");
+      updateStatusRow(dailyScanType === "web" ? "web" : dailyScanType === "ch" ? "ch" : "tr1", { running: true, phase: "extracting", phase_detail: "Daily: " + dailyScanType + " scan in progress..." });
     }
   } catch (e) {}
 }
@@ -1187,7 +1183,7 @@ async function runTr1Scan() {
 
     if (data.status === "started") {
       showToast("TR1 filings scan started...", 5000);
-      updateStatusBar({ running: true, phase: "searching", phase_detail: "Starting TR1 announcement scan..." });
+      updateStatusRow("tr1", { running: true, phase: "searching", phase_detail: "Starting TR1 announcement scan..." });
       startTr1Polling();
     } else {
       showToast(data.message || "Failed to start TR1 scan.");
@@ -1209,7 +1205,7 @@ async function pollTr1Status() {
   try {
     var res = await fetch(API + "/api/tr1-scan/status");
     var status = await res.json();
-    updateStatusBar(status);
+    updateStatusRow("tr1", status);
 
     if (!status.running) {
       clearInterval(tr1PollingInterval);
