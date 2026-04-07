@@ -1149,6 +1149,7 @@ async function pollEnrichStatus() {
       if (status.phase === "done") {
         showToast(status.phase_detail || "Enrichment complete.", 8000);
         showScanLog(status);
+        fetchStats();
         fetchInvestors();
         fetchScanHistory();
       } else if (status.phase === "error") {
