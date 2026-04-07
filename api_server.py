@@ -658,6 +658,81 @@ def tr1_direct_status():
     return get_direct_status()
 
 
+# --- Investor Research Endpoint ---
+
+@app.get("/api/investor/{investor_id}/research")
+def research_investor(investor_id: int):
+    """Research an investor and return a summary profile."""
+    import httpx as _httpx
+
+    cur = db.cursor()
+    cur.execute("SELECT * FROM investors WHERE id = %s", (investor_id,))
+    inv = cur.fetchone()
+    cur.close()
+
+    if not inv:
+        raise HTTPException(status_code=404, detail="Investor not found")
+
+    name = inv["name"]
+    company = inv.get("eis_company", "")
+    role = inv.get("role", "")
+    linkedin = inv.get("linkedin_url", "")
+    source = inv.get("source_name", "")
+    context = inv.get("context_quote", "")
+
+    # Build research prompt
+    prompt = f"""Research this UK investor and provide a concise professional summary.
+
+Name: {name}
+Role: {role}
+Company/Issuer: {company}
+Source: {source}
+Context: {context}
+LinkedIn: {linkedin or 'Not available'}
+
+Provide a summary covering:
+1. **Background**: Who they are, their professional background
+2. **Investment activity**: Known investments, sectors they invest in, investment style
+3. **Current role**: Current company and position
+4. **Notable**: Any notable achievements, board positions, or public profile
+
+If LinkedIn URL is provided, reference their likely professional history based on the URL handle.
+Be factual and concise. If information is limited, say so rather than speculate.
+Format as plain text paragraphs, not markdown."""
+
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        return {"summary": "Gemini API key not configured. Cannot generate research summary."}
+
+    try:
+        resp = _httpx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000},
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            # Save summary to context_quote for persistence
+            if text:
+                cur2 = db.cursor()
+                cur2.execute(
+                    "UPDATE investors SET context_quote = %s WHERE id = %s",
+                    (text.strip(), investor_id)
+                )
+                db.commit()
+                cur2.close()
+            return {"summary": text.strip()}
+        else:
+            return {"summary": f"Gemini returned {resp.status_code}. Could not generate summary."}
+    except Exception as e:
+        return {"summary": f"Research failed: {str(e)}"}
+
+
 # --- LinkedIn Enrichment Endpoints ---
 
 @app.post("/api/enrich")

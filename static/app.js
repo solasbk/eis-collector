@@ -307,6 +307,15 @@ async function openDetail(id) {
       html += '</div>';
     }
 
+    html += '<div class="detail-field" style="margin-top:8px;">';
+    html += '<button class="btn btn-primary btn-sm" onclick="researchInvestor(' + inv.id + ', this)" style="width:100%;">Research Investor</button>';
+    html += '</div>';
+
+    html += '<div class="detail-field" id="research-result-' + inv.id + '" style="display:none;">';
+    html += '<div class="detail-label">Investor Summary</div>';
+    html += '<div class="detail-value" id="research-text-' + inv.id + '" style="white-space:pre-wrap;line-height:1.5;"></div>';
+    html += '</div>';
+
     if (inv.context_quote) {
       html += '<div class="detail-field">';
       html += '<div class="detail-label">Context</div>';
@@ -633,6 +642,30 @@ function updateStatusRow(scanType, status) {
   }
 }
 
+
+/* ─── Investor Research ─── */
+async function researchInvestor(investorId, btn) {
+  btn.textContent = "Researching...";
+  btn.disabled = true;
+  try {
+    var res = await fetch(API + "/api/investor/" + investorId + "/research");
+    var data = await res.json();
+    var resultDiv = document.getElementById("research-result-" + investorId);
+    var textDiv = document.getElementById("research-text-" + investorId);
+    if (resultDiv && textDiv && data.summary) {
+      textDiv.textContent = data.summary;
+      resultDiv.style.display = "";
+      btn.textContent = "Refresh Research";
+      btn.disabled = false;
+    } else {
+      btn.textContent = "No results";
+      btn.disabled = false;
+    }
+  } catch (err) {
+    btn.textContent = "Research failed";
+    btn.disabled = false;
+  }
+}
 
 /* ─── Scan Log Display ─── */
 function showScanLog(status) {
