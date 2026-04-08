@@ -24,7 +24,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 def get_db():
     database_url = os.environ.get("DATABASE_URL", "")
     if database_url:
-        conn = psycopg2.connect(database_url, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = psycopg2.connect(database_url, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=10)
     else:
         # Fallback: local SQLite-style is not available with psycopg2.
         # Raise a clear error if DATABASE_URL is not set.
@@ -40,7 +40,7 @@ def init_db(db):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS investors (
             id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
+            name TEXT,
             role TEXT,
             company TEXT,
             eis_company TEXT,
@@ -294,17 +294,24 @@ print("[startup] Daily scan scheduler thread started")
 
 print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
 
-db = get_db()
-init_db(db)
-seed_db(db)
-_init_scan_history()
+try:
+    db = get_db()
+    print("[startup] DB connected")
+    init_db(db)
+    print("[startup] Tables initialized")
+    seed_db(db)
+    print("[startup] Seed check done")
+    _init_scan_history()
+    print("[startup] Scan history table ready")
 
-# Log the final count after seeding
-_cur = db.cursor()
-_cur.execute("SELECT COUNT(*) as c FROM investors")
-startup_count = _cur.fetchone()["c"]
-_cur.close()
-print(f"[startup] Investor count after init: {startup_count}")
+    _cur = db.cursor()
+    _cur.execute("SELECT COUNT(*) as c FROM investors")
+    startup_count = _cur.fetchone()["c"]
+    _cur.close()
+    print(f"[startup] Investor count: {startup_count}")
+except Exception as e:
+    print(f"[startup] ERROR: {e}")
+    db = None
 
 
 @asynccontextmanager
