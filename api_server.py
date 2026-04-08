@@ -284,43 +284,44 @@ def _daily_scheduler_loop():
         _time.sleep(60)  # check every minute
 
 
-# Start the scheduler thread
-_scheduler_thread = threading.Thread(target=_daily_scheduler_loop, daemon=True)
-_scheduler_thread.start()
-print("[startup] Daily scan scheduler thread started")
+# --- App setup (deferred to lifespan so port binds first) ---
 
-
-# --- App setup ---
-
-print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
-
-try:
-    db = get_db()
-    print("[startup] DB connected")
-    init_db(db)
-    print("[startup] Tables initialized")
-    seed_db(db)
-    print("[startup] Seed check done")
-    _init_scan_history()
-    print("[startup] Scan history table ready")
-
-    _cur = db.cursor()
-    _cur.execute("SELECT COUNT(*) as c FROM investors")
-    startup_count = _cur.fetchone()["c"]
-    _cur.close()
-    print(f"[startup] Investor count: {startup_count}")
-except Exception as e:
-    print(f"[startup] ERROR: {e}")
-    db = None
+db = None
 
 
 @asynccontextmanager
-async def lifespan(app):
-    yield
+async def lifespan(app_instance):
+    global db
+    print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
     try:
-        db.close()
-    except Exception:
-        pass
+        db = get_db()
+        print("[startup] DB connected")
+        init_db(db)
+        print("[startup] Tables initialized")
+        seed_db(db)
+        print("[startup] Seed check done")
+        _init_scan_history()
+        print("[startup] Scan history table ready")
+        _cur = db.cursor()
+        _cur.execute("SELECT COUNT(*) as c FROM investors")
+        startup_count = _cur.fetchone()["c"]
+        _cur.close()
+        print(f"[startup] Investor count: {startup_count}")
+    except Exception as e:
+        print(f"[startup] DB ERROR: {e}")
+
+    # Start scheduler after DB
+    _sched = threading.Thread(target=_daily_scheduler_loop, daemon=True)
+    _sched.start()
+    print("[startup] Scheduler started")
+
+    yield
+
+    if db:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
