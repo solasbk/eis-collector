@@ -289,9 +289,10 @@ def _daily_scheduler_loop():
 db = None
 
 
-@asynccontextmanager
-async def lifespan(app_instance):
+def _deferred_init():
+    """Initialize DB and scheduler in background thread after port binds."""
     global db
+    _time.sleep(2)  # Let uvicorn fully bind
     print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
     try:
         db = get_db()
@@ -310,13 +311,16 @@ async def lifespan(app_instance):
     except Exception as e:
         print(f"[startup] DB ERROR: {e}")
 
-    # Start scheduler after DB
     _sched = threading.Thread(target=_daily_scheduler_loop, daemon=True)
     _sched.start()
     print("[startup] Scheduler started")
 
-    yield
 
+@asynccontextmanager
+async def lifespan(app_instance):
+    # Start DB init in background so port binds immediately
+    threading.Thread(target=_deferred_init, daemon=True).start()
+    yield
     if db:
         try:
             db.close()
