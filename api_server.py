@@ -292,28 +292,46 @@ db = None
 def _deferred_init():
     """Initialize DB and scheduler in background thread after port binds."""
     global db
-    _time.sleep(2)  # Let uvicorn fully bind
-    print(f"[startup] DATABASE_URL set: {'yes' if os.environ.get('DATABASE_URL') else 'NO'}")
+    import sys
     try:
+        _time.sleep(2)
+        sys.stdout.write("[startup] Deferred init starting...\n")
+        sys.stdout.flush()
+        db_url = os.environ.get("DATABASE_URL", "")
+        sys.stdout.write(f"[startup] DATABASE_URL set: {'yes (' + db_url[:30] + '...)' if db_url else 'NO'}\n")
+        sys.stdout.flush()
         db = get_db()
-        print("[startup] DB connected")
+        sys.stdout.write("[startup] DB connected\n")
+        sys.stdout.flush()
         init_db(db)
-        print("[startup] Tables initialized")
+        sys.stdout.write("[startup] Tables initialized\n")
+        sys.stdout.flush()
         seed_db(db)
-        print("[startup] Seed check done")
+        sys.stdout.write("[startup] Seed check done\n")
+        sys.stdout.flush()
         _init_scan_history()
-        print("[startup] Scan history table ready")
+        sys.stdout.write("[startup] Scan history ready\n")
+        sys.stdout.flush()
         _cur = db.cursor()
         _cur.execute("SELECT COUNT(*) as c FROM investors")
         startup_count = _cur.fetchone()["c"]
         _cur.close()
-        print(f"[startup] Investor count: {startup_count}")
+        sys.stdout.write(f"[startup] Investor count: {startup_count}\n")
+        sys.stdout.flush()
     except Exception as e:
-        print(f"[startup] DB ERROR: {e}")
+        sys.stdout.write(f"[startup] DB ERROR: {e}\n")
+        sys.stdout.flush()
+        import traceback
+        traceback.print_exc()
 
-    _sched = threading.Thread(target=_daily_scheduler_loop, daemon=True)
-    _sched.start()
-    print("[startup] Scheduler started")
+    try:
+        _sched = threading.Thread(target=_daily_scheduler_loop, daemon=True)
+        _sched.start()
+        sys.stdout.write("[startup] Scheduler started\n")
+        sys.stdout.flush()
+    except Exception as e:
+        sys.stdout.write(f"[startup] Scheduler ERROR: {e}\n")
+        sys.stdout.flush()
 
 
 @asynccontextmanager
