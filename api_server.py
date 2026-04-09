@@ -292,13 +292,13 @@ db = None
 def _deferred_init():
     """Initialize DB and scheduler in background thread after port binds."""
     global db
-    import sys
+    import sys, time as _t
     try:
-        _time.sleep(2)
+        _t.sleep(2)
         sys.stdout.write("[startup] Deferred init starting...\n")
         sys.stdout.flush()
         db_url = os.environ.get("DATABASE_URL", "")
-        sys.stdout.write(f"[startup] DATABASE_URL set: {'yes (' + db_url[:30] + '...)' if db_url else 'NO'}\n")
+        sys.stdout.write(f"[startup] DATABASE_URL: {'yes (' + db_url[:40] + '...)' if db_url else 'NOT SET'}\n")
         sys.stdout.flush()
         db = get_db()
         sys.stdout.write("[startup] DB connected\n")
@@ -319,10 +319,11 @@ def _deferred_init():
         sys.stdout.write(f"[startup] Investor count: {startup_count}\n")
         sys.stdout.flush()
     except Exception as e:
-        sys.stdout.write(f"[startup] DB ERROR: {e}\n")
+        sys.stdout.write(f"[startup] DB ERROR: {type(e).__name__}: {e}\n")
         sys.stdout.flush()
         import traceback
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
 
     try:
         _sched = threading.Thread(target=_daily_scheduler_loop, daemon=True)
