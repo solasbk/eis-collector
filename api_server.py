@@ -738,6 +738,7 @@ Format as plain text paragraphs, not markdown."""
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     text = ""
+    provider = ""
 
     # Try Gemini with retries
     if gemini_key:
@@ -756,6 +757,7 @@ Format as plain text paragraphs, not markdown."""
                 if resp.status_code == 200:
                     data = resp.json()
                     text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    provider = "Gemini 2.5 Flash"
                     break
                 elif resp.status_code in (503, 429):
                     print(f"[research] Gemini {resp.status_code}, retry {attempt+1}/3...")
@@ -778,6 +780,7 @@ Format as plain text paragraphs, not markdown."""
                 messages=[{"role": "user", "content": prompt}],
             )
             text = msg.content[0].text if msg.content else ""
+            provider = "Claude Haiku"
         except Exception as e:
             print(f"[research] Anthropic error: {e}")
 
@@ -793,7 +796,7 @@ Format as plain text paragraphs, not markdown."""
     except Exception:
         pass
 
-    return {"summary": text.strip()}
+    return {"summary": text.strip(), "provider": provider}
 
 
 # --- LinkedIn Enrichment Endpoints ---

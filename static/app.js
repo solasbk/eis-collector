@@ -655,7 +655,7 @@ async function researchInvestor(investorId, btn) {
     if (resultDiv && textDiv && data.summary) {
       textDiv.textContent = data.summary;
       resultDiv.style.display = "";
-      btn.textContent = "Refresh Research";
+      btn.textContent = "Refresh Research" + (data.provider ? " (" + data.provider + ")" : "");
       btn.disabled = false;
     } else {
       btn.textContent = "No results";
