@@ -735,38 +735,65 @@ Be factual and concise. If information is limited, say so rather than speculate.
 Format as plain text paragraphs, not markdown."""
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
-        return {"summary": "Gemini API key not configured. Cannot generate research summary."}
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    try:
-        resp = _httpx.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000},
-            },
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            # Save summary to bio field
-            if text:
-                cur2 = db.cursor()
-                cur2.execute(
-                    "UPDATE investors SET bio = %s WHERE id = %s",
-                    (text.strip(), investor_id)
+    text = ""
+
+    # Try Gemini with retries
+    if gemini_key:
+        import time as _rt
+        for attempt in range(3):
+            try:
+                resp = _httpx.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                    headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000},
+                    },
+                    timeout=30,
                 )
-                db.commit()
-                cur2.close()
-            return {"summary": text.strip()}
-        else:
-            err_body = resp.text[:200] if resp.text else "no details"
-            print(f"[research] Gemini {resp.status_code}: {err_body}")
-            return {"summary": f"Gemini returned {resp.status_code}: {err_body}"}
-    except Exception as e:
-        return {"summary": f"Research failed: {str(e)}"}
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    break
+                elif resp.status_code in (503, 429):
+                    print(f"[research] Gemini {resp.status_code}, retry {attempt+1}/3...")
+                    _rt.sleep(3 * (attempt + 1))
+                else:
+                    print(f"[research] Gemini {resp.status_code}: {resp.text[:100]}")
+                    break
+            except Exception as e:
+                print(f"[research] Gemini error: {e}")
+                break
+
+    # Fall back to Anthropic if Gemini failed
+    if not text and anthropic_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = msg.content[0].text if msg.content else ""
+        except Exception as e:
+            print(f"[research] Anthropic error: {e}")
+
+    if not text:
+        return {"summary": "Both Gemini and Anthropic failed. Please try again later."}
+
+    # Save summary to bio field
+    try:
+        cur2 = db.cursor()
+        cur2.execute("UPDATE investors SET bio = %s WHERE id = %s", (text.strip(), investor_id))
+        db.commit()
+        cur2.close()
+    except Exception:
+        pass
+
+    return {"summary": text.strip()}
 
 
 # --- LinkedIn Enrichment Endpoints ---
